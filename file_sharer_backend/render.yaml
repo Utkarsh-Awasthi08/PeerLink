@@ -1,0 +1,7 @@
+services:
+  - type: web
+    name: my-peer-link-backend
+    env: docker
+    plan: free
+    # The build command is now handled by the Dockerfile
+    # The start command is also in the Dockerfile's CMD
