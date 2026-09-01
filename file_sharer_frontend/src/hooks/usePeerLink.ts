@@ -1,4 +1,4 @@
-import { useState, useRef, useCallback } from 'react';
+import { useState, useRef, useCallback, useEffect } from 'react';
 
 type Role = 'sender' | 'receiver';
 
@@ -98,6 +98,11 @@ export function usePeerLink({ role, code: initialCode }: UsePeerLinkProps) {
   // Receive buffers (reset per file)
   const receiveBufferRef = useRef<ArrayBuffer[]>([]);
   const fileStreamRef = useRef<any>(null); // For File System Access API
+  
+  // OPFS
+  const opfsFileHandleRef = useRef<any>(null);
+  const opfsWritableRef = useRef<any>(null);
+  
   const receivedSizeRef = useRef<number>(0);
   const expectedSizeRef = useRef<number>(0);
   const incomingFilenameRef = useRef<string>('download');
@@ -138,6 +143,22 @@ export function usePeerLink({ role, code: initialCode }: UsePeerLinkProps) {
     await new Promise<void>((resolve) => {
       resumeResolverRef.current = resolve;
     });
+  }, []);
+
+  // Cleanup old OPFS files on mount
+  useEffect(() => {
+    if (navigator.storage && navigator.storage.getDirectory) {
+      navigator.storage.getDirectory().then(async (root) => {
+        try {
+          // @ts-ignore
+          for await (const [name] of root.entries()) {
+            await root.removeEntry(name, { recursive: true }).catch(() => {});
+          }
+        } catch (e) {
+          // Ignore
+        }
+      }).catch(() => {});
+    }
   }, []);
 
   // ── Signaling helpers ───────────────────────────────────────────────────────
@@ -326,6 +347,11 @@ export function usePeerLink({ role, code: initialCode }: UsePeerLinkProps) {
             await fileStreamRef.current.close();
             fileStreamRef.current = null;
             setReceivedFile({ blob: new Blob([]), filename: incomingFilenameRef.current, index: msg.index, handledByStream: true });
+          } else if (opfsWritableRef.current && opfsFileHandleRef.current) {
+            await opfsWritableRef.current.close();
+            opfsWritableRef.current = null;
+            const file = await opfsFileHandleRef.current.getFile();
+            setReceivedFile({ blob: file, filename: incomingFilenameRef.current, index: msg.index, handledByStream: false });
           } else {
             const blob = new Blob(receiveBufferRef.current);
             setReceivedFile({ blob, filename: incomingFilenameRef.current, index: msg.index, handledByStream: false });
@@ -358,6 +384,9 @@ export function usePeerLink({ role, code: initialCode }: UsePeerLinkProps) {
 
         if (fileStreamRef.current) {
           await fileStreamRef.current.write(chunk);
+          receivedSizeRef.current += chunk.byteLength;
+        } else if (opfsWritableRef.current) {
+          await opfsWritableRef.current.write(chunk);
           receivedSizeRef.current += chunk.byteLength;
         } else {
           receiveBufferRef.current.push(chunk);
@@ -491,8 +520,26 @@ export function usePeerLink({ role, code: initialCode }: UsePeerLinkProps) {
           console.warn('Save prompt cancelled or failed.', e);
           return;
         }
+      } else if (navigator.storage && navigator.storage.getDirectory) {
+        try {
+          const root = await navigator.storage.getDirectory();
+          const handle = await root.getFileHandle(fileInfo.name, { create: true });
+          const writable = await handle.createWritable();
+          opfsFileHandleRef.current = handle;
+          opfsWritableRef.current = writable;
+          fileStreamRef.current = null;
+        } catch (e) {
+          console.warn('OPFS failed, falling back to RAM buffer', e);
+          opfsFileHandleRef.current = null;
+          opfsWritableRef.current = null;
+          fileStreamRef.current = null;
+          receiveBufferRef.current = [];
+        }
       } else {
         fileStreamRef.current = null;
+        opfsFileHandleRef.current = null;
+        opfsWritableRef.current = null;
+        receiveBufferRef.current = [];
       }
 
       dc.send(JSON.stringify({ type: 'request_file', index }));
