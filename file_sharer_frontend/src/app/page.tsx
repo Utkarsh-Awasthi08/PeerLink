@@ -228,17 +228,20 @@ export default function Home() {
 
                     {/* Pause / Resume */}
                     {sender.progress > 0 && !isSendingDone && (
-                      <button
-                        id="btn-pause-resume"
-                        onClick={sender.isPaused ? sender.resume : sender.pause}
-                        className={`w-full flex items-center justify-center gap-2 py-2.5 px-4 rounded-xl font-medium text-sm transition-colors ${
-                          sender.isPaused
-                            ? 'bg-green-500 text-white hover:bg-green-600'
-                            : 'bg-yellow-100 text-yellow-700 hover:bg-yellow-200'
-                        }`}
-                      >
-                        {sender.isPaused ? <><FiPlay className="w-4 h-4" /> Resume</> : <><FiPause className="w-4 h-4" /> Pause</>}
-                      </button>
+                      <div className="flex flex-col gap-2 mt-4">
+                        {sender.isStreaming && (
+                          <button
+                            onClick={sender.isPaused ? sender.resume : sender.pause}
+                            className={`w-full py-3 px-4 rounded-xl font-bold flex justify-center items-center gap-2 transition-all shadow-sm
+                              ${sender.isPaused 
+                                ? 'bg-green-500 text-white hover:bg-green-600' 
+                                : 'bg-yellow-100 text-yellow-700 hover:bg-yellow-200'}`}
+                          >
+                            {sender.isPaused ? <FiPlay className="w-5 h-5" /> : <FiPause className="w-5 h-5" />}
+                            {sender.isPaused ? 'Resume' : 'Pause'}
+                          </button>
+                        )}
+                      </div>
                     )}
 
                     <button

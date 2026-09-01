@@ -75,6 +75,7 @@ export function usePeerLink({ role, code: initialCode }: UsePeerLinkProps) {
   const [manifest, setManifest] = useState<FileManifestItem[]>([]);
   const manifestRef = useRef<FileManifestItem[]>([]);
   const [downloadingIndex, setDownloadingIndex] = useState<number | null>(null);
+  const [isStreaming, setIsStreaming] = useState<boolean>(false);
 
   // Auto-download trigger
   const [receivedFile, setReceivedFile] = useState<ReceivedFile | null>(null);
@@ -240,6 +241,7 @@ export function usePeerLink({ role, code: initialCode }: UsePeerLinkProps) {
     if (!file) return;
 
     currentlyStreamingRef.current = index;
+    setIsStreaming(true);
     setStatus(`Sending: ${file.name}...`);
     
     // Announce metadata
@@ -296,6 +298,7 @@ export function usePeerLink({ role, code: initialCode }: UsePeerLinkProps) {
     stopSpeedTicker();
     dc.send(JSON.stringify({ type: 'eof', index }));
     currentlyStreamingRef.current = null;
+    setIsStreaming(false);
     setStatus(`Waiting for peer to request a file...`);
   }, [waitIfPaused, startSpeedTicker, stopSpeedTicker]);
 
@@ -509,6 +512,8 @@ export function usePeerLink({ role, code: initialCode }: UsePeerLinkProps) {
       const fileInfo = manifestRef.current.find(f => f.index === index);
       if (!fileInfo) return;
 
+      setDownloadingIndex(index);
+
       if ('showSaveFilePicker' in window) {
         try {
           const handle = await (window as any).showSaveFilePicker({
@@ -518,6 +523,7 @@ export function usePeerLink({ role, code: initialCode }: UsePeerLinkProps) {
           fileStreamRef.current = writable;
         } catch (e) {
           console.warn('Save prompt cancelled or failed.', e);
+          setDownloadingIndex(null);
           return;
         }
       } else if (navigator.storage && navigator.storage.getDirectory) {
@@ -543,7 +549,6 @@ export function usePeerLink({ role, code: initialCode }: UsePeerLinkProps) {
       }
 
       dc.send(JSON.stringify({ type: 'request_file', index }));
-      setDownloadingIndex(index);
     }
   }, []);
 
@@ -563,6 +568,7 @@ export function usePeerLink({ role, code: initialCode }: UsePeerLinkProps) {
     progress,
     fileProgresses,
     isPaused,
+    isStreaming,
     speedBytesPerSec,
     etaSeconds,
     receivedFile,
