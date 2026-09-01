@@ -80,17 +80,23 @@ export default function DownloadPage() {
     }
   }, [downloadQueue, downloadingIndex, requestFile]);
 
+  const allDownloaded = manifest.length > 0 && downloadedIndices.size === manifest.length;
+
   const handleDownloadAll = () => {
-    // Add all un-downloaded files to the queue
-    const unDownloaded = manifest
-      .map((f) => f.index)
-      .filter((idx) => !downloadedIndices.has(idx));
-    
-    if (unDownloaded.length > 0) {
-      setDownloadQueue(unDownloaded);
-      toast('Starting sequential download! 🚀', { icon: '🍿' });
+    if (allDownloaded) {
+      // If all are downloaded, re-queue all of them
+      setDownloadQueue(manifest.map((f) => f.index));
     } else {
-      toast('All files are already downloaded!');
+      // Otherwise, only queue the ones that haven't been downloaded yet
+      const toDownload = manifest
+        .map((f) => f.index)
+        .filter((index) => !downloadedIndices.has(index));
+      if (toDownload.length > 0) {
+        setDownloadQueue(toDownload);
+        toast('Starting sequential download! 🚀', { icon: '🍿' });
+      } else {
+        toast('All files are already downloaded!');
+      }
     }
   };
 
@@ -133,13 +139,13 @@ export default function DownloadPage() {
               <h3 className="text-sm font-bold text-gray-700 uppercase tracking-wider">
                 Available Files ({manifest.length})
               </h3>
-              {manifest.length > 1 && downloadedIndices.size < manifest.length && (
+              {manifest.length > 1 && (
                 <button
                   onClick={handleDownloadAll}
                   disabled={downloadQueue.length > 0}
                   className="text-xs font-bold text-blue-600 hover:text-blue-800 bg-blue-50 px-3 py-1.5 rounded-lg transition-colors disabled:opacity-50"
                 >
-                  Download All
+                  {allDownloaded ? 'Download All Again' : 'Download All'}
                 </button>
               )}
             </div>
