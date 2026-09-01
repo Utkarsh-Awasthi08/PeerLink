@@ -158,15 +158,23 @@ export default function DownloadPage() {
                       </div>
                       
                       <div className="flex-shrink-0 ml-2">
-                        {isDownloaded ? (
-                          <div className="flex items-center gap-1 text-green-600 bg-green-50 px-2.5 py-1.5 rounded-lg text-xs font-bold">
-                            <FiCheckCircle className="w-4 h-4" />
-                            Done
-                          </div>
-                        ) : isDownloading ? (
+                        {isDownloading ? (
                           <div className="text-xs font-bold text-blue-600 bg-blue-50 px-2.5 py-1.5 rounded-lg">
                             {progress}%
                           </div>
+                        ) : isDownloaded ? (
+                          <button
+                            onClick={() => requestFile(file.index)}
+                            disabled={isBusy}
+                            className={`flex items-center gap-1 px-3 py-1.5 rounded-lg text-xs font-bold transition-all shadow-sm border ${
+                              isBusy
+                                ? 'bg-gray-100 text-gray-400 border-gray-200 cursor-not-allowed'
+                                : 'bg-green-50 text-green-700 hover:bg-green-100 border-green-200 hover:shadow active:scale-95'
+                            }`}
+                          >
+                            <FiDownload className="w-3.5 h-3.5" />
+                            Again
+                          </button>
                         ) : (
                           <button
                             onClick={() => requestFile(file.index)}
