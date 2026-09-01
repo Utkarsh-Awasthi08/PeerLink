@@ -70,8 +70,8 @@ export default function Home() {
   // When peer connects, kick off the multi-file transfer
   useEffect(() => {
     if (sender.status === 'Peer connected! Ready for transfer.' && isSharing && selectedFiles.length > 0) {
-      toast.success('Peer connected! Starting encrypted transfer...');
-      sender.sendFiles(selectedFiles);
+      toast.success('Peer connected! Waiting for receiver to request files...');
+      sender.shareFiles(selectedFiles);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sender.status]);
@@ -85,8 +85,7 @@ export default function Home() {
   // ── Download / Receive flow ──────────────────────────────────────────────────
 
   const handleDownload = (code: string) => {
-    const keyStr = undefined; // receiver gets key from URL fragment on /d/[code] page
-    receiver.connect(code, keyStr);
+    window.location.href = `/d/${code}`;
   };
 
   // Auto-download each file as it arrives (fires once per file_eof)
@@ -107,7 +106,6 @@ export default function Home() {
   // ── Helpers ──────────────────────────────────────────────────────────────────
 
   const isSendingDone = sender.status.includes('sent successfully');
-  const isReceivingDone = sender.status.includes('received');
 
   return (
     <div className="min-h-screen flex items-center justify-center bg-gradient-to-br from-blue-50 via-indigo-50 to-purple-50 p-4">
@@ -225,7 +223,7 @@ export default function Home() {
                     )}
 
                     {/* Per-file progress list */}
-                    {sender.fileProgresses.length > 0 && (
+                    {Object.keys(sender.fileProgresses).length > 0 && (
                       <ul className="space-y-2">
                         {selectedFiles.map((file, i) => (
                           <li key={`${file.name}-${i}`} className="px-3 py-2 bg-gray-50 rounded-xl">
@@ -276,54 +274,10 @@ export default function Home() {
             ) : (
               /* ── Receive tab ── */
               <div>
-                {!receiver.code ? (
-                  <FileDownload
-                    onDownload={(code) => handleDownload(code)}
-                    isDownloading={false}
-                  />
-                ) : (
-                  <div className="space-y-4">
-                    {/* Status pill */}
-                    <div className="flex items-center gap-2 text-sm text-gray-500">
-                      <span
-                        className={`inline-block w-2 h-2 rounded-full ${
-                          isReceivingDone ? 'bg-green-500' : 'bg-blue-500 animate-pulse'
-                        }`}
-                      />
-                      {receiver.status}
-                    </div>
-
-                    {/* Transfer stats */}
-                    {receiver.progress > 0 && (
-                      <TransferStats
-                        progress={receiver.progress}
-                        speedBytesPerSec={receiver.speedBytesPerSec}
-                        etaSeconds={receiver.etaSeconds}
-                        color="green"
-                      />
-                    )}
-
-                    {/* Batch info */}
-                    {receiver.totalFilesInBatch > 1 && (
-                      <p className="text-xs text-center text-gray-400">
-                        File {receiver.currentFileIndexInBatch + 1} of {receiver.totalFilesInBatch}
-                      </p>
-                    )}
-
-                    {receiver.progress === 100 && (
-                      <div className="text-center">
-                        <p className="text-green-600 font-semibold text-sm">All files downloaded! ✅</p>
-                        <button
-                          id="btn-receive-again"
-                          onClick={() => receiver.disconnect()}
-                          className="mt-2 text-blue-500 text-xs hover:underline"
-                        >
-                          Receive another file
-                        </button>
-                      </div>
-                    )}
-                  </div>
-                )}
+                <FileDownload
+                  onDownload={(code) => handleDownload(code)}
+                  isDownloading={false}
+                />
               </div>
             )}
           </div>

@@ -4,15 +4,22 @@ import { useEffect, useState, useRef } from 'react';
 import { usePeerLink } from '@/hooks/usePeerLink';
 import TransferStats from '@/components/TransferStats';
 import toast from 'react-hot-toast';
-import { FiShield, FiLock, FiCheckCircle } from 'react-icons/fi';
+import { FiShield, FiLock, FiCheckCircle, FiDownload, FiFile } from 'react-icons/fi';
+
+function formatBytes(bytes: number): string {
+  if (bytes === 0) return '0 B';
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
 
 export default function DownloadPage() {
   const [code, setCode] = useState<string>('');
   const [encKeyStr, setEncKeyStr] = useState<string | undefined>(undefined);
   const initialized = useRef(false);
 
-  // Track all files that have been fully downloaded
-  const [downloadedFiles, setDownloadedFiles] = useState<string[]>([]);
+  // Track all files that have been fully downloaded by index
+  const [downloadedIndices, setDownloadedIndices] = useState<Set<number>>(new Set());
 
   const {
     status,
@@ -20,8 +27,9 @@ export default function DownloadPage() {
     speedBytesPerSec,
     etaSeconds,
     receivedFile,
-    totalFilesInBatch,
-    currentFileIndexInBatch,
+    manifest,
+    downloadingIndex,
+    requestFile,
     connect,
     disconnect,
   } = usePeerLink({ role: 'receiver' });
@@ -39,10 +47,10 @@ export default function DownloadPage() {
     return () => disconnect();
   }, [connect, disconnect]);
 
-  // Fires once per file (new object ref each time) — auto-download individually
+  // Handle newly downloaded file
   useEffect(() => {
     if (!receivedFile) return;
-    const { blob, filename } = receivedFile;
+    const { blob, filename, index } = receivedFile;
 
     const url = window.URL.createObjectURL(blob);
     const link = document.createElement('a');
@@ -53,14 +61,21 @@ export default function DownloadPage() {
     link.remove();
     setTimeout(() => URL.revokeObjectURL(url), 5000);
 
-    setDownloadedFiles((prev) => [...prev, filename]);
-    toast.success(`"${filename}" saved! 📥`);
+    setDownloadedIndices((prev) => new Set(prev).add(index));
+    toast.success(`"${filename}" downloaded! 📥`);
   }, [receivedFile]);
 
+  const handleDownloadAll = () => {
+    // A simple approach: we could loop and download, but we need to wait for each to finish.
+    // For now, since it's on-demand, we can let them click individually, 
+    // or we could implement a queue. To keep it robust, let's just 
+    // encourage individual clicking if they want specific ones, 
+    // but a "Download All" would require building a client-side queue.
+    // Given the architecture, clicking "Download" per file is the primary action.
+    toast('Click the Download button next to each file!', { icon: '👇' });
+  };
+
   const isEncrypted = !!encKeyStr;
-  const isAllDone = progress === 100;
-  const isMultiFile = totalFilesInBatch > 1;
-  const isBusy = progress > 0 && !isAllDone;
 
   return (
     <div className="min-h-screen flex items-center justify-center bg-gradient-to-br from-blue-50 to-indigo-100 p-4">
@@ -82,70 +97,91 @@ export default function DownloadPage() {
               <FiLock className="w-3.5 h-3.5" /> E2E Encrypted
             </div>
           )}
-          {isMultiFile && (
-            <div className="text-sm bg-indigo-100 text-indigo-700 px-3 py-1.5 rounded-full font-semibold">
-              {totalFilesInBatch} files
-            </div>
-          )}
         </div>
 
         {/* Status line */}
-        <div className="flex items-center gap-2 mb-4">
-          {isBusy && (
+        <div className="flex items-center justify-center gap-2 mb-6">
+          {downloadingIndex !== null && (
             <div className="animate-spin rounded-full h-4 w-4 border-2 border-blue-500 border-t-transparent flex-shrink-0" />
           )}
-          <p className="text-gray-600 text-sm">{status}</p>
+          <p className="text-gray-600 text-sm font-medium">{status}</p>
         </div>
 
-        {/* Current file indicator for multi-file batches */}
-        {isMultiFile && isBusy && (
-          <p className="text-xs text-center text-gray-400 mb-3">
-            Receiving file {currentFileIndexInBatch + 1} of {totalFilesInBatch}
-          </p>
-        )}
+        {/* File Manifest List */}
+        {manifest.length > 0 && (
+          <div className="space-y-3 mb-6">
+            <div className="flex items-center justify-between px-1 mb-2">
+              <h3 className="text-sm font-bold text-gray-700 uppercase tracking-wider">
+                Available Files ({manifest.length})
+              </h3>
+            </div>
 
-        {/* Transfer stats (overall progress) */}
-        {progress > 0 && (
-          <div className="mb-5">
-            <TransferStats
-              progress={progress}
-              speedBytesPerSec={speedBytesPerSec}
-              etaSeconds={etaSeconds}
-              color="blue"
-            />
+            <ul className="space-y-2 max-h-64 overflow-y-auto pr-1">
+              {manifest.map((file) => {
+                const isDownloading = downloadingIndex === file.index;
+                const isDownloaded = downloadedIndices.has(file.index);
+                const isBusy = downloadingIndex !== null; // someone else is downloading
+
+                return (
+                  <li key={file.index} className="p-3 bg-gray-50 rounded-xl border border-gray-100">
+                    <div className="flex items-center gap-3">
+                      <div className="p-2 bg-blue-100 rounded-lg flex-shrink-0">
+                        <FiFile className="w-5 h-5 text-blue-500" />
+                      </div>
+                      
+                      <div className="flex-1 min-w-0">
+                        <p className="text-sm font-semibold text-gray-700 truncate">{file.name}</p>
+                        <p className="text-xs text-gray-400">{formatBytes(file.size)}</p>
+                      </div>
+                      
+                      <div className="flex-shrink-0 ml-2">
+                        {isDownloaded ? (
+                          <div className="flex items-center gap-1 text-green-600 bg-green-50 px-2.5 py-1.5 rounded-lg text-xs font-bold">
+                            <FiCheckCircle className="w-4 h-4" />
+                            Done
+                          </div>
+                        ) : isDownloading ? (
+                          <div className="text-xs font-bold text-blue-600 bg-blue-50 px-2.5 py-1.5 rounded-lg">
+                            {progress}%
+                          </div>
+                        ) : (
+                          <button
+                            onClick={() => requestFile(file.index)}
+                            disabled={isBusy}
+                            className={`flex items-center gap-1 px-3 py-1.5 rounded-lg text-xs font-bold transition-all shadow-sm ${
+                              isBusy 
+                                ? 'bg-gray-200 text-gray-400 cursor-not-allowed'
+                                : 'bg-blue-600 text-white hover:bg-blue-700 hover:shadow active:scale-95'
+                            }`}
+                          >
+                            <FiDownload className="w-3.5 h-3.5" />
+                            Get
+                          </button>
+                        )}
+                      </div>
+                    </div>
+
+                    {/* Individual Progress Bar */}
+                    {isDownloading && (
+                      <div className="mt-3">
+                        <TransferStats
+                          progress={progress}
+                          speedBytesPerSec={speedBytesPerSec}
+                          etaSeconds={etaSeconds}
+                          color="blue"
+                        />
+                      </div>
+                    )}
+                  </li>
+                );
+              })}
+            </ul>
           </div>
         )}
 
-        {/* Downloaded file list */}
-        {downloadedFiles.length > 0 && (
-          <ul className="space-y-1.5 mb-4">
-            {downloadedFiles.map((name) => (
-              <li
-                key={name}
-                className="flex items-center gap-2 px-3 py-2 bg-green-50 rounded-xl text-sm text-green-700"
-              >
-                <FiCheckCircle className="w-4 h-4 flex-shrink-0" />
-                <span className="truncate">{name}</span>
-              </li>
-            ))}
-          </ul>
-        )}
-
-        {/* All done state */}
-        {isAllDone && (
-          <div className="text-center mt-2">
-            <div className="text-4xl mb-2">🎉</div>
-            <p className="text-green-600 font-semibold mb-4">
-              {isMultiFile
-                ? `All ${totalFilesInBatch} files downloaded!`
-                : 'File downloaded successfully!'}
-            </p>
-            <a
-              href="/"
-              className="inline-block px-5 py-2.5 bg-blue-500 text-white rounded-xl hover:bg-blue-600 transition-colors font-medium text-sm"
-            >
-              Share Your Own Files
-            </a>
+        {manifest.length === 0 && !status.includes('Disconnected') && (
+          <div className="text-center py-8 text-gray-400 text-sm">
+            Waiting for sender to share files...
           </div>
         )}
 

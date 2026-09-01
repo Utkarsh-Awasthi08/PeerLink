@@ -44,6 +44,13 @@ async function decryptChunk(key: CryptoKey, data: ArrayBuffer): Promise<ArrayBuf
 export interface ReceivedFile {
   blob: Blob;
   filename: string;
+  index: number;
+}
+
+export interface FileManifestItem {
+  index: number;
+  name: string;
+  size: number;
 }
 
 // ─── Hook ────────────────────────────────────────────────────────────────────
@@ -53,23 +60,22 @@ export function usePeerLink({ role, code: initialCode }: UsePeerLinkProps) {
   const [encryptionKey, setEncryptionKey] = useState<string | null>(null);
   const [status, setStatus] = useState<string>('Idle');
 
-  // Overall batch progress (0–100)
+  // Single file progress tracker (tracks whatever is currently streaming)
   const [progress, setProgress] = useState<number>(0);
 
-  // Per-file progress state (for the queue list on the sender's UI)
-  const [fileProgresses, setFileProgresses] = useState<number[]>([]);
+  // Per-file sender progress tracking
+  const [fileProgresses, setFileProgresses] = useState<Record<number, number>>({});
 
   const [isPaused, setIsPaused] = useState(false);
   const [speedBytesPerSec, setSpeedBytesPerSec] = useState<number>(0);
   const [etaSeconds, setEtaSeconds] = useState<number | null>(null);
 
-  // Each time a file finishes on the receiver, this state is set so the UI
-  // can trigger an auto-download. A new object reference fires the useEffect.
-  const [receivedFile, setReceivedFile] = useState<ReceivedFile | null>(null);
+  // Pull / On-Demand specific state
+  const [manifest, setManifest] = useState<FileManifestItem[]>([]);
+  const [downloadingIndex, setDownloadingIndex] = useState<number | null>(null);
 
-  // Number of files in the batch (for display on the receiver side)
-  const [totalFilesInBatch, setTotalFilesInBatch] = useState<number>(0);
-  const [currentFileIndexInBatch, setCurrentFileIndexInBatch] = useState<number>(0);
+  // Auto-download trigger
+  const [receivedFile, setReceivedFile] = useState<ReceivedFile | null>(null);
 
   const wsRef = useRef<WebSocket | null>(null);
   const pcRef = useRef<RTCPeerConnection | null>(null);
@@ -79,8 +85,10 @@ export function usePeerLink({ role, code: initialCode }: UsePeerLinkProps) {
   // Transfer control
   const pausedRef = useRef(false);
   const resumeResolverRef = useRef<(() => void) | null>(null);
+  const stagedFilesRef = useRef<File[]>([]);
+  const currentlyStreamingRef = useRef<number | null>(null);
 
-  // Speed tracking — scoped over the whole batch on the sender side
+  // Speed tracking
   const bytesAtLastTickRef = useRef<number>(0);
   const lastTickTimeRef = useRef<number>(0);
   const speedIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
@@ -90,10 +98,7 @@ export function usePeerLink({ role, code: initialCode }: UsePeerLinkProps) {
   const receivedSizeRef = useRef<number>(0);
   const expectedSizeRef = useRef<number>(0);
   const incomingFilenameRef = useRef<string>('download');
-
-  // Batch-level byte counters on the receiver
-  const batchTotalSizeRef = useRef<number>(0);
-  const batchReceivedSizeRef = useRef<number>(0);
+  const incomingFileIndexRef = useRef<number>(-1);
 
   const wsUrl = process.env.NEXT_PUBLIC_WS_URL || 'ws://localhost:8080/signaling';
 
@@ -112,7 +117,7 @@ export function usePeerLink({ role, code: initialCode }: UsePeerLinkProps) {
       resumeResolverRef.current();
       resumeResolverRef.current = null;
     }
-    setStatus('Resuming transfer...');
+    setStatus(currentlyStreamingRef.current !== null ? 'Resuming transfer...' : 'Ready for transfer.');
   }, []);
 
   const waitIfPaused = useCallback(async () => {
@@ -157,6 +162,9 @@ export function usePeerLink({ role, code: initialCode }: UsePeerLinkProps) {
   const startSpeedTicker = useCallback((getBytesTransferred: () => number, getTotal: () => number) => {
     bytesAtLastTickRef.current = 0;
     lastTickTimeRef.current = Date.now();
+    setProgress(0);
+    setEtaSeconds(null);
+    setSpeedBytesPerSec(0);
 
     if (speedIntervalRef.current) clearInterval(speedIntervalRef.current);
     speedIntervalRef.current = setInterval(() => {
@@ -170,8 +178,12 @@ export function usePeerLink({ role, code: initialCode }: UsePeerLinkProps) {
       lastTickTimeRef.current = now;
       setSpeedBytesPerSec(speed);
 
-      const remaining = getTotal() - transferred;
+      const total = getTotal();
+      const remaining = total - transferred;
       setEtaSeconds(speed > 0 ? Math.ceil(remaining / speed) : null);
+      if (total > 0) {
+        setProgress(Math.round((transferred / total) * 100));
+      }
     }, 1000);
   }, []);
 
@@ -184,48 +196,127 @@ export function usePeerLink({ role, code: initialCode }: UsePeerLinkProps) {
     setEtaSeconds(null);
   }, []);
 
-  // ── Data Channel setup (receiver) ────────────────────────────────────────────
+  // ── Stream Single File (Sender) ──────────────────────────────────────────────
+  
+  const streamFile = useCallback(async (index: number) => {
+    const dc = dcRef.current;
+    if (!dc || dc.readyState !== 'open') return;
+
+    const file = stagedFilesRef.current[index];
+    if (!file) return;
+
+    currentlyStreamingRef.current = index;
+    setStatus(`Sending: ${file.name}...`);
+    
+    // Announce metadata
+    dc.send(JSON.stringify({
+      type: 'metadata',
+      index: index,
+      filename: file.name,
+      size: file.size,
+    }));
+
+    const CHUNK_SIZE = 64 * 1024; // 64 KB
+    const LOW_WATERMARK = 1 * 1024 * 1024; // 1 MB backpressure
+    let offset = 0;
+    let bytesSentRef = 0;
+
+    startSpeedTicker(() => bytesSentRef, () => file.size);
+
+    while (offset < file.size) {
+      await waitIfPaused();
+
+      // Ensure we haven't been asked to stream a different file abruptly
+      if (currentlyStreamingRef.current !== index) {
+        stopSpeedTicker();
+        return;
+      }
+
+      if (dc.bufferedAmount > LOW_WATERMARK) {
+        await new Promise<void>((resolve) => {
+          dc.bufferedAmountLowThreshold = LOW_WATERMARK / 2;
+          dc.onbufferedamountlow = () => {
+            dc.onbufferedamountlow = null;
+            resolve();
+          };
+        });
+      }
+
+      const slice = file.slice(offset, offset + CHUNK_SIZE);
+      const rawChunk = await slice.arrayBuffer();
+
+      let chunk: ArrayBuffer = rawChunk;
+      if (cryptoKeyRef.current) {
+        chunk = await encryptChunk(cryptoKeyRef.current, rawChunk);
+      }
+
+      dc.send(chunk);
+      offset += rawChunk.byteLength;
+      bytesSentRef = offset;
+
+      // Update per-file sender UI progress
+      const filePct = Math.round((offset / file.size) * 100);
+      setFileProgresses(prev => ({ ...prev, [index]: filePct }));
+    }
+
+    stopSpeedTicker();
+    dc.send(JSON.stringify({ type: 'eof', index }));
+    currentlyStreamingRef.current = null;
+    setStatus(`Waiting for peer to request a file...`);
+  }, [waitIfPaused, startSpeedTicker, stopSpeedTicker]);
+
+  // ── Data Channel setup ──────────────────────────────────────────────────────
 
   const setupDataChannel = useCallback((dc: RTCDataChannel) => {
     dc.binaryType = 'arraybuffer';
-    dc.onopen = () => setStatus('Peer connected! Ready for transfer.');
+    
+    dc.onopen = () => {
+      setStatus('Peer connected! Ready for transfer.');
+      
+      // If Sender opens DC, automatically push the manifest
+      if (role === 'sender' && stagedFilesRef.current.length > 0) {
+        const manifestPayload = stagedFilesRef.current.map((f, i) => ({
+          index: i, name: f.name, size: f.size
+        }));
+        dc.send(JSON.stringify({ type: 'file_manifest', manifest: manifestPayload }));
+      }
+    };
 
     dc.onmessage = async (event) => {
       if (typeof event.data === 'string') {
-        const meta = JSON.parse(event.data);
+        const msg = JSON.parse(event.data);
 
-        if (meta.type === 'batch_start') {
-          // Kick off batch-level speed tracking
-          batchTotalSizeRef.current = meta.totalSizeBytes;
-          batchReceivedSizeRef.current = 0;
-          setTotalFilesInBatch(meta.totalFiles);
-          setCurrentFileIndexInBatch(0);
-          setProgress(0);
-          startSpeedTicker(
-            () => batchReceivedSizeRef.current,
-            () => batchTotalSizeRef.current,
-          );
-
-        } else if (meta.type === 'metadata') {
-          // New file starting — reset the per-file buffer
-          incomingFilenameRef.current = meta.filename;
-          expectedSizeRef.current = meta.size;
+        // -- Receiver handling --
+        if (msg.type === 'file_manifest') {
+          setManifest(msg.manifest);
+          setStatus('Ready to download.');
+        } 
+        else if (msg.type === 'metadata') {
+          incomingFileIndexRef.current = msg.index;
+          incomingFilenameRef.current = msg.filename;
+          expectedSizeRef.current = msg.size;
           receiveBufferRef.current = [];
           receivedSizeRef.current = 0;
-          setCurrentFileIndexInBatch(meta.currentFileIndex);
-          setStatus(`Receiving file ${meta.currentFileIndex + 1}/${meta.totalFiles}: ${meta.filename}`);
-
-        } else if (meta.type === 'eof') {
-          // One file done — trigger auto-download immediately
-          const blob = new Blob(receiveBufferRef.current);
-          setReceivedFile({ blob, filename: incomingFilenameRef.current });
-          receiveBufferRef.current = []; // free memory
-          setStatus(`File ${incomingFilenameRef.current} received ✅`);
-
-        } else if (meta.type === 'batch_complete') {
+          setDownloadingIndex(msg.index);
+          setStatus(`Receiving: ${msg.filename}...`);
+          
+          startSpeedTicker(
+            () => receivedSizeRef.current,
+            () => expectedSizeRef.current
+          );
+        } 
+        else if (msg.type === 'eof') {
           stopSpeedTicker();
+          const blob = new Blob(receiveBufferRef.current);
+          setReceivedFile({ blob, filename: incomingFilenameRef.current, index: msg.index });
+          receiveBufferRef.current = [];
+          setDownloadingIndex(null);
+          setStatus(`File received ✅`);
           setProgress(100);
-          setStatus('All files received! ✅');
+        }
+        // -- Sender handling --
+        else if (msg.type === 'request_file' && role === 'sender') {
+          streamFile(msg.index);
         }
 
       } else {
@@ -237,13 +328,9 @@ export function usePeerLink({ role, code: initialCode }: UsePeerLinkProps) {
 
         receiveBufferRef.current.push(chunk);
         receivedSizeRef.current += chunk.byteLength;
-        batchReceivedSizeRef.current += chunk.byteLength;
-
-        const pct = Math.round((batchReceivedSizeRef.current / batchTotalSizeRef.current) * 100);
-        setProgress(pct);
       }
     };
-  }, [startSpeedTicker, stopSpeedTicker]);
+  }, [role, streamFile, startSpeedTicker, stopSpeedTicker]);
 
   // ── WebRTC negotiation ───────────────────────────────────────────────────────
 
@@ -325,101 +412,40 @@ export function usePeerLink({ role, code: initialCode }: UsePeerLinkProps) {
     ws.onerror = () => setStatus('WebSocket error. Please retry.');
     ws.onclose = (e) => {
       if (e.code === 1008) {
-        setStatus('Disconnected: Rate limit exceeded. Please wait before retrying.');
+        setStatus('Disconnected: Rate limit exceeded.');
       } else {
         setStatus('Disconnected.');
       }
     };
   }, [role, wsUrl, sendSignalingMessage, initiateWebRTC, handleOffer]);
 
-  // ── Multi-file sender ────────────────────────────────────────────────────────
+  // ── Pull/On-Demand API ─────────────────────────────────────────────────────
 
-  const sendFiles = useCallback(async (files: File[]) => {
+  /** Sender saves files locally and pushes the manifest if connected */
+  const shareFiles = useCallback((files: File[]) => {
+    stagedFilesRef.current = files;
+    
+    // Reset file progresses
+    const newProgresses: Record<number, number> = {};
+    files.forEach((_, i) => newProgresses[i] = 0);
+    setFileProgresses(newProgresses);
+
     const dc = dcRef.current;
-    if (!dc || dc.readyState !== 'open') {
-      setStatus('Data channel not ready. Please wait for your peer to connect.');
-      return;
+    if (dc && dc.readyState === 'open') {
+      const manifestPayload = files.map((f, i) => ({ index: i, name: f.name, size: f.size }));
+      dc.send(JSON.stringify({ type: 'file_manifest', manifest: manifestPayload }));
+      setStatus('Waiting for peer to request a file...');
     }
+  }, []);
 
-    const CHUNK_SIZE = 64 * 1024;         // 64 KB
-    const LOW_WATERMARK = 1 * 1024 * 1024; // 1 MB backpressure
-
-    const totalSizeBytes = files.reduce((acc, f) => acc + f.size, 0);
-    let batchBytesSent = 0;
-
-    // Initialize per-file progress array
-    setFileProgresses(new Array(files.length).fill(0));
-
-    // 1. Announce the batch
-    dc.send(JSON.stringify({ type: 'batch_start', totalFiles: files.length, totalSizeBytes }));
-
-    // Start a single speed ticker over the entire batch
-    startSpeedTicker(() => batchBytesSent, () => totalSizeBytes);
-
-    // 2. Stream each file sequentially
-    for (let i = 0; i < files.length; i++) {
-      const file = files[i];
-
-      setStatus(`Sending file ${i + 1}/${files.length}: ${file.name}`);
-      dc.send(JSON.stringify({
-        type: 'metadata',
-        filename: file.name,
-        size: file.size,
-        totalFiles: files.length,
-        totalSizeBytes,
-        currentFileIndex: i,
-      }));
-
-      let offset = 0;
-
-      while (offset < file.size) {
-        await waitIfPaused();
-
-        if (dc.bufferedAmount > LOW_WATERMARK) {
-          await new Promise<void>((resolve) => {
-            dc.bufferedAmountLowThreshold = LOW_WATERMARK / 2;
-            dc.onbufferedamountlow = () => {
-              dc.onbufferedamountlow = null;
-              resolve();
-            };
-          });
-        }
-
-        const slice = file.slice(offset, offset + CHUNK_SIZE);
-        const rawChunk = await slice.arrayBuffer();
-
-        let chunk: ArrayBuffer = rawChunk;
-        if (cryptoKeyRef.current) {
-          chunk = await encryptChunk(cryptoKeyRef.current, rawChunk);
-        }
-
-        dc.send(chunk);
-        offset += rawChunk.byteLength;
-        batchBytesSent += rawChunk.byteLength;
-
-        // Update per-file progress
-        const filePct = Math.round((offset / file.size) * 100);
-        setFileProgresses(prev => {
-          const next = [...prev];
-          next[i] = filePct;
-          return next;
-        });
-
-        // Update overall batch progress
-        const batchPct = Math.round((batchBytesSent / totalSizeBytes) * 100);
-        setProgress(batchPct);
-      }
-
-      // Signal end of this file
-      dc.send(JSON.stringify({ type: 'eof' }));
+  /** Receiver requests a specific file from the sender */
+  const requestFile = useCallback((index: number) => {
+    const dc = dcRef.current;
+    if (dc && dc.readyState === 'open') {
+      dc.send(JSON.stringify({ type: 'request_file', index }));
+      setDownloadingIndex(index);
     }
-
-    // 3. Signal end of batch
-    stopSpeedTicker();
-    dc.send(JSON.stringify({ type: 'batch_complete' }));
-    setStatus(`All ${files.length} file${files.length > 1 ? 's' : ''} sent successfully! ✅`);
-    setProgress(100);
-  }, [waitIfPaused, startSpeedTicker, stopSpeedTicker]);
+  }, []);
 
   // ── Cleanup ──────────────────────────────────────────────────────────────────
 
@@ -440,10 +466,11 @@ export function usePeerLink({ role, code: initialCode }: UsePeerLinkProps) {
     speedBytesPerSec,
     etaSeconds,
     receivedFile,
-    totalFilesInBatch,
-    currentFileIndexInBatch,
+    manifest,
+    downloadingIndex,
     connect,
-    sendFiles,
+    shareFiles,
+    requestFile,
     pause,
     resume,
     disconnect,
