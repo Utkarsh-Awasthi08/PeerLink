@@ -212,16 +212,6 @@ export default function Home() {
                       {sender.status}
                     </div>
 
-                    {/* Overall progress */}
-                    {sender.progress > 0 && (
-                      <TransferStats
-                        progress={sender.progress}
-                        speedBytesPerSec={sender.speedBytesPerSec}
-                        etaSeconds={sender.etaSeconds}
-                        color="blue"
-                      />
-                    )}
-
                     {/* Per-file progress list */}
                     {Object.keys(sender.fileProgresses).length > 0 && (
                       <ul className="space-y-2">

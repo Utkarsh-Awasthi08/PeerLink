@@ -20,6 +20,7 @@ export default function DownloadPage() {
 
   // Track all files that have been fully downloaded by index
   const [downloadedIndices, setDownloadedIndices] = useState<Set<number>>(new Set());
+  const [downloadQueue, setDownloadQueue] = useState<number[]>([]);
 
   const {
     status,
@@ -65,14 +66,27 @@ export default function DownloadPage() {
     toast.success(`"${filename}" downloaded! 📥`);
   }, [receivedFile]);
 
+  // Process the download queue sequentially
+  useEffect(() => {
+    if (downloadingIndex === null && downloadQueue.length > 0) {
+      const nextIndex = downloadQueue[0];
+      setDownloadQueue((prev) => prev.slice(1));
+      requestFile(nextIndex);
+    }
+  }, [downloadQueue, downloadingIndex, requestFile]);
+
   const handleDownloadAll = () => {
-    // A simple approach: we could loop and download, but we need to wait for each to finish.
-    // For now, since it's on-demand, we can let them click individually, 
-    // or we could implement a queue. To keep it robust, let's just 
-    // encourage individual clicking if they want specific ones, 
-    // but a "Download All" would require building a client-side queue.
-    // Given the architecture, clicking "Download" per file is the primary action.
-    toast('Click the Download button next to each file!', { icon: '👇' });
+    // Add all un-downloaded files to the queue
+    const unDownloaded = manifest
+      .map((f) => f.index)
+      .filter((idx) => !downloadedIndices.has(idx));
+    
+    if (unDownloaded.length > 0) {
+      setDownloadQueue(unDownloaded);
+      toast('Starting sequential download! 🚀', { icon: '🍿' });
+    } else {
+      toast('All files are already downloaded!');
+    }
   };
 
   const isEncrypted = !!encKeyStr;
@@ -114,6 +128,15 @@ export default function DownloadPage() {
               <h3 className="text-sm font-bold text-gray-700 uppercase tracking-wider">
                 Available Files ({manifest.length})
               </h3>
+              {manifest.length > 1 && downloadedIndices.size < manifest.length && (
+                <button
+                  onClick={handleDownloadAll}
+                  disabled={downloadQueue.length > 0}
+                  className="text-xs font-bold text-blue-600 hover:text-blue-800 bg-blue-50 px-3 py-1.5 rounded-lg transition-colors disabled:opacity-50"
+                >
+                  Download All
+                </button>
+              )}
             </div>
 
             <ul className="space-y-2 max-h-64 overflow-y-auto pr-1">
