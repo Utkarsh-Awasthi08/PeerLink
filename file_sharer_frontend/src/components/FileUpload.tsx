@@ -47,7 +47,7 @@ export default function FileUpload({ onFilesSelected, disabled = false }: FileUp
             <p className="text-gray-700 font-medium text-base">
               Drag &amp; drop files here, or <span className="text-blue-500 underline">click to browse</span>
             </p>
-            <p className="text-xs text-gray-400">Any file type · Up to 500 MB per file · Multiple files supported</p>
+            <p className="text-xs text-gray-400">Any file type · Unlimited size · Multiple files supported</p>
           </>
         )}
       </div>

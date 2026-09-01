@@ -9,8 +9,6 @@ import { usePeerLink } from '@/hooks/usePeerLink';
 import toast from 'react-hot-toast';
 import { FiPause, FiPlay, FiShield, FiX, FiShare2, FiFile } from 'react-icons/fi';
 
-const MAX_FILE_SIZE_MB = 500;
-
 /** Format bytes into a human-readable string */
 function formatBytes(bytes: number): string {
   if (bytes === 0) return '0 B';
@@ -42,17 +40,10 @@ export default function Home() {
   // ── Upload / Share flow ──────────────────────────────────────────────────────
 
   const handleFilesSelected = (files: File[]) => {
-    const valid = files.filter((f) => {
-      if (f.size > MAX_FILE_SIZE_MB * 1024 * 1024) {
-        toast.error(`❌ "${f.name}" exceeds ${MAX_FILE_SIZE_MB} MB and was skipped.`);
-        return false;
-      }
-      return true;
-    });
     setSelectedFiles((prev) => {
       // Deduplicate by name+size
       const existing = new Set(prev.map((f) => `${f.name}-${f.size}`));
-      const newFiles = valid.filter((f) => !existing.has(`${f.name}-${f.size}`));
+      const newFiles = files.filter((f) => !existing.has(`${f.name}-${f.size}`));
       return [...prev, ...newFiles];
     });
   };
