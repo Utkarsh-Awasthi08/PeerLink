@@ -15,7 +15,9 @@ By leveraging WebRTC for direct data streaming and the Web Crypto API for End-to
 *   **Real-Time Progress & UX:** Live transfer speeds (MB/s), ETA calculations, and visual progress bars.
 *   **Signaling Protection:** The Spring Boot backend uses **Bucket4j** to rate-limit WebSocket connections and prevent malicious spamming.
 
----
+### 🌊 Advanced Streaming (Under the Hood)
+*   **64 KB Chunking:** Files are never loaded entirely into RAM. They are sliced into tiny 64 KB chunks directly from disk using the native `File.slice()` API, making it possible to share massive files on low-memory devices.
+*   **Backpressure Management:** To prevent browser Out-of-Memory (OOM) crashes, the sender strictly monitors the `RTCDataChannel.bufferedAmount`. If the network buffer exceeds 1 MB, the chunk-reading loop automatically pauses, waiting for the network to drain before slicing the next chunk.
 
 ## 🏗️ System Architecture
 
