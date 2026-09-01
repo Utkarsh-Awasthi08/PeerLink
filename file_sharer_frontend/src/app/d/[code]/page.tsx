@@ -1,19 +1,30 @@
 'use client';
 
 import { useEffect, useState, useRef } from 'react';
-import { QRCodeSVG } from 'qrcode.react';
 import { usePeerLink } from '@/hooks/usePeerLink';
 import TransferStats from '@/components/TransferStats';
 import toast from 'react-hot-toast';
-import { FiShield, FiLock } from 'react-icons/fi';
+import { FiShield, FiLock, FiCheckCircle } from 'react-icons/fi';
 
 export default function DownloadPage() {
   const [code, setCode] = useState<string>('');
   const [encKeyStr, setEncKeyStr] = useState<string | undefined>(undefined);
   const initialized = useRef(false);
 
-  const { status, progress, speedBytesPerSec, etaSeconds, receivedFile, connect, disconnect } =
-    usePeerLink({ role: 'receiver' });
+  // Track all files that have been fully downloaded
+  const [downloadedFiles, setDownloadedFiles] = useState<string[]>([]);
+
+  const {
+    status,
+    progress,
+    speedBytesPerSec,
+    etaSeconds,
+    receivedFile,
+    totalFilesInBatch,
+    currentFileIndexInBatch,
+    connect,
+    disconnect,
+  } = usePeerLink({ role: 'receiver' });
 
   useEffect(() => {
     if (initialized.current) return;
@@ -28,27 +39,33 @@ export default function DownloadPage() {
     return () => disconnect();
   }, [connect, disconnect]);
 
+  // Fires once per file (new object ref each time) — auto-download individually
   useEffect(() => {
-    if (receivedFile) {
-      const { blob, filename } = receivedFile;
-      const url = window.URL.createObjectURL(blob);
-      const link = document.createElement('a');
-      link.href = url;
-      link.download = filename;
-      document.body.appendChild(link);
-      link.click();
-      link.remove();
-      setTimeout(() => URL.revokeObjectURL(url), 5000);
-      toast.success('Download complete! 🚀');
-    }
+    if (!receivedFile) return;
+    const { blob, filename } = receivedFile;
+
+    const url = window.URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = filename;
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 5000);
+
+    setDownloadedFiles((prev) => [...prev, filename]);
+    toast.success(`"${filename}" saved! 📥`);
   }, [receivedFile]);
 
   const isEncrypted = !!encKeyStr;
-  const isDone = !!receivedFile;
+  const isAllDone = progress === 100;
+  const isMultiFile = totalFilesInBatch > 1;
+  const isBusy = progress > 0 && !isAllDone;
 
   return (
     <div className="min-h-screen flex items-center justify-center bg-gradient-to-br from-blue-50 to-indigo-100 p-4">
       <div className="bg-white rounded-2xl p-8 shadow-2xl max-w-md w-full">
+
         {/* Header */}
         <div className="text-center mb-6">
           <h1 className="text-3xl font-bold text-blue-600">PeerLink</h1>
@@ -65,17 +82,29 @@ export default function DownloadPage() {
               <FiLock className="w-3.5 h-3.5" /> E2E Encrypted
             </div>
           )}
+          {isMultiFile && (
+            <div className="text-sm bg-indigo-100 text-indigo-700 px-3 py-1.5 rounded-full font-semibold">
+              {totalFilesInBatch} files
+            </div>
+          )}
         </div>
 
-        {/* Status */}
-        <div className="flex items-center gap-2 mb-5">
-          {!isDone && (
+        {/* Status line */}
+        <div className="flex items-center gap-2 mb-4">
+          {isBusy && (
             <div className="animate-spin rounded-full h-4 w-4 border-2 border-blue-500 border-t-transparent flex-shrink-0" />
           )}
           <p className="text-gray-600 text-sm">{status}</p>
         </div>
 
-        {/* Transfer stats */}
+        {/* Current file indicator for multi-file batches */}
+        {isMultiFile && isBusy && (
+          <p className="text-xs text-center text-gray-400 mb-3">
+            Receiving file {currentFileIndexInBatch + 1} of {totalFilesInBatch}
+          </p>
+        )}
+
+        {/* Transfer stats (overall progress) */}
         {progress > 0 && (
           <div className="mb-5">
             <TransferStats
@@ -87,16 +116,35 @@ export default function DownloadPage() {
           </div>
         )}
 
-        {/* Success state */}
-        {isDone && (
-          <div className="text-center mt-4">
-            <div className="text-5xl mb-3">✅</div>
-            <p className="text-green-600 font-semibold mb-5">File downloaded successfully!</p>
+        {/* Downloaded file list */}
+        {downloadedFiles.length > 0 && (
+          <ul className="space-y-1.5 mb-4">
+            {downloadedFiles.map((name) => (
+              <li
+                key={name}
+                className="flex items-center gap-2 px-3 py-2 bg-green-50 rounded-xl text-sm text-green-700"
+              >
+                <FiCheckCircle className="w-4 h-4 flex-shrink-0" />
+                <span className="truncate">{name}</span>
+              </li>
+            ))}
+          </ul>
+        )}
+
+        {/* All done state */}
+        {isAllDone && (
+          <div className="text-center mt-2">
+            <div className="text-4xl mb-2">🎉</div>
+            <p className="text-green-600 font-semibold mb-4">
+              {isMultiFile
+                ? `All ${totalFilesInBatch} files downloaded!`
+                : 'File downloaded successfully!'}
+            </p>
             <a
               href="/"
-              className="inline-block px-5 py-2.5 bg-blue-500 text-white rounded-xl hover:bg-blue-600 transition-colors font-medium"
+              className="inline-block px-5 py-2.5 bg-blue-500 text-white rounded-xl hover:bg-blue-600 transition-colors font-medium text-sm"
             >
-              Share Your Own File
+              Share Your Own Files
             </a>
           </div>
         )}

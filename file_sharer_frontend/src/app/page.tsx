@@ -7,11 +7,26 @@ import InviteCode from '@/components/InviteCode';
 import TransferStats from '@/components/TransferStats';
 import { usePeerLink } from '@/hooks/usePeerLink';
 import toast from 'react-hot-toast';
-import { FiPause, FiPlay, FiShield } from 'react-icons/fi';
+import { FiPause, FiPlay, FiShield, FiX, FiShare2, FiFile } from 'react-icons/fi';
+
+const MAX_FILE_SIZE_MB = 500;
+
+/** Format bytes into a human-readable string */
+function formatBytes(bytes: number): string {
+  if (bytes === 0) return '0 B';
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+const generateCode = () => Math.floor(10000 + Math.random() * 90000).toString();
 
 export default function Home() {
-  const [uploadedFile, setUploadedFile] = useState<File | null>(null);
   const [activeTab, setActiveTab] = useState<'upload' | 'download'>('upload');
+
+  // ── Staged file queue state ─────────────────────────────────────────────────
+  const [selectedFiles, setSelectedFiles] = useState<File[]>([]);
+  const [isSharing, setIsSharing] = useState(false);
 
   const sender = usePeerLink({ role: 'sender' });
   const receiver = usePeerLink({ role: 'receiver' });
@@ -24,203 +39,302 @@ export default function Home() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  const generateCode = () => Math.floor(10000 + Math.random() * 90000).toString();
+  // ── Upload / Share flow ──────────────────────────────────────────────────────
 
-  // ── Upload / Share flow ─────────────────────────────────────────────────────
+  const handleFilesSelected = (files: File[]) => {
+    const valid = files.filter((f) => {
+      if (f.size > MAX_FILE_SIZE_MB * 1024 * 1024) {
+        toast.error(`❌ "${f.name}" exceeds ${MAX_FILE_SIZE_MB} MB and was skipped.`);
+        return false;
+      }
+      return true;
+    });
+    setSelectedFiles((prev) => {
+      // Deduplicate by name+size
+      const existing = new Set(prev.map((f) => `${f.name}-${f.size}`));
+      const newFiles = valid.filter((f) => !existing.has(`${f.name}-${f.size}`));
+      return [...prev, ...newFiles];
+    });
+  };
 
-  const handleFileUpload = (file: File) => {
-    const MAX_FILE_SIZE_MB = 500;
-    if (file.size > MAX_FILE_SIZE_MB * 1024 * 1024) {
-      toast.error(`❌ File too large! Max ${MAX_FILE_SIZE_MB} MB allowed.`);
-      return;
-    }
-    setUploadedFile(file);
+  const removeFile = (index: number) => {
+    setSelectedFiles((prev) => prev.filter((_, i) => i !== index));
+  };
+
+  const handleShare = () => {
+    if (selectedFiles.length === 0) return;
+    setIsSharing(true);
     sender.connect(generateCode());
   };
 
+  // When peer connects, kick off the multi-file transfer
   useEffect(() => {
-    if (sender.status === 'Peer connected! Ready for transfer.' && uploadedFile) {
+    if (sender.status === 'Peer connected! Ready for transfer.' && isSharing && selectedFiles.length > 0) {
       toast.success('Peer connected! Starting encrypted transfer...');
-      sender.sendFile(uploadedFile);
+      sender.sendFiles(selectedFiles);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [sender.status, uploadedFile]);
+  }, [sender.status]);
 
-  // ── Download / Receive flow ─────────────────────────────────────────────────
-
-  const handleDownload = (inputCode: string) => {
-    receiver.connect(inputCode);
+  const handleCancelShare = () => {
+    sender.disconnect();
+    setIsSharing(false);
+    setSelectedFiles([]);
   };
 
+  // ── Download / Receive flow ──────────────────────────────────────────────────
+
+  const handleDownload = (code: string) => {
+    const keyStr = undefined; // receiver gets key from URL fragment on /d/[code] page
+    receiver.connect(code, keyStr);
+  };
+
+  // Auto-download each file as it arrives (fires once per file_eof)
   useEffect(() => {
-    if (receiver.receivedFile) {
-      const { blob, filename } = receiver.receivedFile;
-      const url = window.URL.createObjectURL(blob);
-      const link = document.createElement('a');
-      link.href = url;
-      link.download = filename;
-      document.body.appendChild(link);
-      link.click();
-      link.remove();
-      setTimeout(() => URL.revokeObjectURL(url), 5000);
-      toast.success('Download complete! 🚀');
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+    if (!receiver.receivedFile) return;
+    const { blob, filename } = receiver.receivedFile;
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = filename;
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 5000);
+    toast.success(`Downloaded "${filename}" ✅`);
   }, [receiver.receivedFile]);
 
-  const isTransferring = sender.progress > 0 && sender.progress < 100;
+  // ── Helpers ──────────────────────────────────────────────────────────────────
+
+  const isSendingDone = sender.status.includes('sent successfully');
+  const isReceivingDone = sender.status.includes('received');
 
   return (
-    <div className="container mx-auto px-4 py-8 max-w-4xl">
-      <header className="text-center mb-12">
-        <h1 className="text-4xl font-bold text-blue-600 mb-2">PeerLink</h1>
-        <p className="text-xl text-gray-500">Secure WebRTC P2P File Sharing</p>
-      </header>
+    <div className="min-h-screen flex items-center justify-center bg-gradient-to-br from-blue-50 via-indigo-50 to-purple-50 p-4">
+      <div className="w-full max-w-lg">
+        {/* Card */}
+        <div className="bg-white rounded-2xl shadow-2xl overflow-hidden">
 
-      <div className="bg-white rounded-2xl shadow-lg overflow-hidden">
-        {/* Tabs */}
-        <div className="flex border-b">
-          {(['upload', 'download'] as const).map((tab) => (
-            <button
-              key={tab}
-              className={`flex-1 px-4 py-3.5 font-medium text-sm transition-colors ${
-                activeTab === tab
+          {/* Header */}
+          <div className="px-8 pt-8 pb-4 text-center">
+            <h1 className="text-4xl font-black tracking-tight text-transparent bg-clip-text bg-gradient-to-r from-blue-600 to-indigo-500">
+              PeerLink
+            </h1>
+            <p className="text-sm text-gray-400 mt-1">Zero-server. Fully encrypted. Peer-to-peer.</p>
+          </div>
+
+          {/* Tabs */}
+          <div className="flex border-b border-gray-100 mx-2">
+            {(['upload', 'download'] as const).map((tab) => (
+              <button
+                key={tab}
+                id={`tab-${tab}`}
+                className={`flex-1 px-4 py-3.5 font-medium text-sm transition-colors ${activeTab === tab
                   ? 'text-blue-600 border-b-2 border-blue-600 bg-blue-50/50'
                   : 'text-gray-500 hover:text-gray-700 hover:bg-gray-50'
-              }`}
-              onClick={() => setActiveTab(tab)}
-            >
-              {tab === 'upload' ? '📤 Share a File' : '📥 Receive a File'}
-            </button>
-          ))}
-        </div>
+                }`}
+                onClick={() => setActiveTab(tab)}
+              >
+                {tab === 'upload' ? '📤 Share Files' : '📥 Receive Files'}
+              </button>
+            ))}
+          </div>
 
-        <div className="p-6">
-          {/* ── Share tab ── */}
-          {activeTab === 'upload' ? (
-            <div>
-              {!uploadedFile ? (
-                <FileUpload onFileUpload={handleFileUpload} isUploading={false} />
-              ) : (
-                <div className="space-y-4">
-                  {/* File info */}
-                  <div className="p-4 border rounded-xl bg-gray-50">
-                    <p className="text-base font-semibold text-gray-700 mb-0.5">
-                      Sharing:{' '}
-                      <span className="text-blue-600 truncate">{uploadedFile.name}</span>
-                    </p>
-                    <p className="text-xs text-gray-400">
-                      {(uploadedFile.size / 1024 / 1024).toFixed(2)} MB
-                    </p>
-                  </div>
+          <div className="p-6">
+            {activeTab === 'upload' ? (
+              /* ── Share tab ── */
+              <div className="space-y-4">
 
-                  {/* Status pill */}
-                  <div className="flex items-center gap-2 text-sm text-gray-500">
-                    <span
-                      className={`inline-block w-2 h-2 rounded-full ${
-                        sender.status.includes('complete') ? 'bg-green-500' :
-                        sender.isPaused ? 'bg-yellow-400' : 'bg-blue-500 animate-pulse'
-                      }`}
+                {/* ── State 1: File Selection (not yet sharing) ── */}
+                {!isSharing && (
+                  <>
+                    <FileUpload
+                      onFilesSelected={handleFilesSelected}
+                      disabled={false}
                     />
-                    {sender.status}
-                  </div>
 
-                  {/* Transfer stats */}
-                  {sender.progress > 0 && (
-                    <TransferStats
-                      progress={sender.progress}
-                      speedBytesPerSec={sender.speedBytesPerSec}
-                      etaSeconds={sender.etaSeconds}
-                      isPaused={sender.isPaused}
-                      color="blue"
-                    />
-                  )}
+                    {/* File Queue */}
+                    {selectedFiles.length > 0 && (
+                      <div className="space-y-2">
+                        <p className="text-xs font-semibold text-gray-400 uppercase tracking-wide">
+                          {selectedFiles.length} file{selectedFiles.length > 1 ? 's' : ''} queued
+                          &nbsp;·&nbsp;
+                          {formatBytes(selectedFiles.reduce((a, f) => a + f.size, 0))} total
+                        </p>
 
-                  {/* Pause / Resume */}
-                  {isTransferring && (
-                    <div>
-                      {sender.isPaused ? (
+                        <ul className="space-y-1.5 max-h-48 overflow-y-auto pr-1">
+                          {selectedFiles.map((file, i) => (
+                            <li
+                              key={`${file.name}-${file.size}-${i}`}
+                              className="flex items-center gap-3 px-3 py-2 bg-gray-50 rounded-xl"
+                            >
+                              <div className="p-1.5 bg-blue-100 rounded-lg flex-shrink-0">
+                                <FiFile className="w-4 h-4 text-blue-500" />
+                              </div>
+                              <div className="flex-1 min-w-0">
+                                <p className="text-sm font-medium text-gray-700 truncate">{file.name}</p>
+                                <p className="text-xs text-gray-400">{formatBytes(file.size)}</p>
+                              </div>
+                              <button
+                                id={`remove-file-${i}`}
+                                onClick={() => removeFile(i)}
+                                className="p-1 rounded-lg hover:bg-red-50 text-gray-400 hover:text-red-400 transition-colors flex-shrink-0"
+                                title="Remove file"
+                              >
+                                <FiX className="w-4 h-4" />
+                              </button>
+                            </li>
+                          ))}
+                        </ul>
+
                         <button
-                          onClick={sender.resume}
-                          className="flex items-center gap-2 px-4 py-2 bg-green-500 text-white rounded-lg hover:bg-green-600 transition-colors text-sm font-medium"
+                          id="btn-generate-share"
+                          onClick={handleShare}
+                          className="w-full flex items-center justify-center gap-2 py-3 px-4 rounded-xl font-semibold text-white bg-gradient-to-r from-blue-500 to-indigo-500 hover:from-blue-600 hover:to-indigo-600 transition-all shadow-md hover:shadow-lg active:scale-[.98]"
                         >
-                          <FiPlay /> Resume Transfer
+                          <FiShare2 className="w-4 h-4" />
+                          Generate Link &amp; Share
                         </button>
-                      ) : (
-                        <button
-                          onClick={sender.pause}
-                          className="flex items-center gap-2 px-4 py-2 bg-amber-500 text-white rounded-lg hover:bg-amber-600 transition-colors text-sm font-medium"
-                        >
-                          <FiPause /> Pause Transfer
-                        </button>
-                      )}
+                      </div>
+                    )}
+                  </>
+                )}
+
+                {/* ── State 2: Actively sharing ── */}
+                {isSharing && (
+                  <div className="space-y-4">
+                    {/* Status pill */}
+                    <div className="flex items-center gap-2 text-sm text-gray-500">
+                      <span
+                        className={`inline-block w-2 h-2 rounded-full flex-shrink-0 ${
+                          isSendingDone ? 'bg-green-500' :
+                          sender.isPaused ? 'bg-yellow-400' : 'bg-blue-500 animate-pulse'
+                        }`}
+                      />
+                      {sender.status}
                     </div>
-                  )}
 
-                  {/* Invite code + QR */}
-                  <InviteCode port={sender.code} encryptionKey={sender.encryptionKey} />
+                    {/* Overall progress */}
+                    {sender.progress > 0 && (
+                      <TransferStats
+                        progress={sender.progress}
+                        speedBytesPerSec={sender.speedBytesPerSec}
+                        etaSeconds={sender.etaSeconds}
+                        color="blue"
+                      />
+                    )}
 
-                  <button
-                    onClick={() => { sender.disconnect(); setUploadedFile(null); }}
-                    className="text-red-400 text-xs hover:underline"
-                  >
-                    Cancel & Start Over
-                  </button>
-                </div>
-              )}
-            </div>
-          ) : (
-            /* ── Receive tab ── */
-            <div>
-              {!receiver.code ? (
-                <FileDownload
-                  onDownload={(code) => handleDownload(code)}
-                  isDownloading={false}
-                />
-              ) : (
-                <div className="space-y-4">
-                  {/* Status pill */}
-                  <div className="flex items-center gap-2 text-sm text-gray-500">
-                    <span
-                      className={`inline-block w-2 h-2 rounded-full ${
-                        receiver.status.includes('complete') ? 'bg-green-500' : 'bg-blue-500 animate-pulse'
-                      }`}
-                    />
-                    {receiver.status}
-                  </div>
+                    {/* Per-file progress list */}
+                    {sender.fileProgresses.length > 0 && (
+                      <ul className="space-y-2">
+                        {selectedFiles.map((file, i) => (
+                          <li key={`${file.name}-${i}`} className="px-3 py-2 bg-gray-50 rounded-xl">
+                            <div className="flex items-center justify-between mb-1">
+                              <p className="text-xs font-medium text-gray-600 truncate max-w-[75%]">{file.name}</p>
+                              <span className="text-xs text-gray-400">{sender.fileProgresses[i] ?? 0}%</span>
+                            </div>
+                            <div className="w-full bg-gray-200 rounded-full h-1.5">
+                              <div
+                                className="bg-blue-400 h-1.5 rounded-full transition-all duration-300"
+                                style={{ width: `${sender.fileProgresses[i] ?? 0}%` }}
+                              />
+                            </div>
+                          </li>
+                        ))}
+                      </ul>
+                    )}
 
-                  {/* Transfer stats */}
-                  {receiver.progress > 0 && (
-                    <TransferStats
-                      progress={receiver.progress}
-                      speedBytesPerSec={receiver.speedBytesPerSec}
-                      etaSeconds={receiver.etaSeconds}
-                      color="green"
-                    />
-                  )}
+                    {/* Invite code + QR */}
+                    <InviteCode port={sender.code} encryptionKey={sender.encryptionKey} />
 
-                  {receiver.status.includes('complete') && (
+                    {/* Pause / Resume */}
+                    {sender.progress > 0 && !isSendingDone && (
+                      <button
+                        id="btn-pause-resume"
+                        onClick={sender.isPaused ? sender.resume : sender.pause}
+                        className={`w-full flex items-center justify-center gap-2 py-2.5 px-4 rounded-xl font-medium text-sm transition-colors ${
+                          sender.isPaused
+                            ? 'bg-green-500 text-white hover:bg-green-600'
+                            : 'bg-yellow-100 text-yellow-700 hover:bg-yellow-200'
+                        }`}
+                      >
+                        {sender.isPaused ? <><FiPlay className="w-4 h-4" /> Resume</> : <><FiPause className="w-4 h-4" /> Pause</>}
+                      </button>
+                    )}
+
                     <button
-                      onClick={() => {
-                        receiver.disconnect();
-                        setActiveTab('upload');
-                      }}
-                      className="px-4 py-2 bg-blue-500 text-white rounded-lg hover:bg-blue-600 text-sm font-medium"
+                      id="btn-cancel"
+                      onClick={handleCancelShare}
+                      className="text-red-400 text-xs hover:underline w-full text-center"
                     >
-                      Share Your Own File
+                      Cancel &amp; Start Over
                     </button>
-                  )}
-                </div>
-              )}
-            </div>
-          )}
+                  </div>
+                )}
+              </div>
+
+            ) : (
+              /* ── Receive tab ── */
+              <div>
+                {!receiver.code ? (
+                  <FileDownload
+                    onDownload={(code) => handleDownload(code)}
+                    isDownloading={false}
+                  />
+                ) : (
+                  <div className="space-y-4">
+                    {/* Status pill */}
+                    <div className="flex items-center gap-2 text-sm text-gray-500">
+                      <span
+                        className={`inline-block w-2 h-2 rounded-full ${
+                          isReceivingDone ? 'bg-green-500' : 'bg-blue-500 animate-pulse'
+                        }`}
+                      />
+                      {receiver.status}
+                    </div>
+
+                    {/* Transfer stats */}
+                    {receiver.progress > 0 && (
+                      <TransferStats
+                        progress={receiver.progress}
+                        speedBytesPerSec={receiver.speedBytesPerSec}
+                        etaSeconds={receiver.etaSeconds}
+                        color="green"
+                      />
+                    )}
+
+                    {/* Batch info */}
+                    {receiver.totalFilesInBatch > 1 && (
+                      <p className="text-xs text-center text-gray-400">
+                        File {receiver.currentFileIndexInBatch + 1} of {receiver.totalFilesInBatch}
+                      </p>
+                    )}
+
+                    {receiver.progress === 100 && (
+                      <div className="text-center">
+                        <p className="text-green-600 font-semibold text-sm">All files downloaded! ✅</p>
+                        <button
+                          id="btn-receive-again"
+                          onClick={() => receiver.disconnect()}
+                          className="mt-2 text-blue-500 text-xs hover:underline"
+                        >
+                          Receive another file
+                        </button>
+                      </div>
+                    )}
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
+
+          {/* Footer */}
+          <div className="px-6 pb-5 flex items-center justify-center gap-1.5 text-xs text-gray-300">
+            <FiShield className="w-3 h-3" />
+            <span>End-to-end encrypted · Files never touch our servers</span>
+          </div>
         </div>
       </div>
-
-      <footer className="mt-10 text-center text-gray-400 text-xs flex items-center justify-center gap-1.5">
-        <FiShield className="w-3 h-3" />
-        PeerLink © {new Date().getFullYear()} — WebRTC · E2E Encrypted · Zero Server Storage
-      </footer>
     </div>
   );
 }
