@@ -108,6 +108,11 @@ export function usePeerLink({ role, code: initialCode }: UsePeerLinkProps) {
     pausedRef.current = true;
     setIsPaused(true);
     setStatus('Transfer paused');
+    
+    // Notify receiver
+    if (dcRef.current?.readyState === 'open') {
+      dcRef.current.send(JSON.stringify({ type: 'pause' }));
+    }
   }, []);
 
   const resume = useCallback(() => {
@@ -118,6 +123,11 @@ export function usePeerLink({ role, code: initialCode }: UsePeerLinkProps) {
       resumeResolverRef.current = null;
     }
     setStatus(currentlyStreamingRef.current !== null ? 'Resuming transfer...' : 'Ready for transfer.');
+    
+    // Notify receiver
+    if (dcRef.current?.readyState === 'open') {
+      dcRef.current.send(JSON.stringify({ type: 'resume' }));
+    }
   }, []);
 
   const waitIfPaused = useCallback(async () => {
@@ -313,6 +323,14 @@ export function usePeerLink({ role, code: initialCode }: UsePeerLinkProps) {
           setDownloadingIndex(null);
           setStatus(`File received ✅`);
           setProgress(100);
+        }
+        else if (msg.type === 'pause') {
+          setIsPaused(true);
+          setStatus('Transfer paused by sender ⏸️');
+        }
+        else if (msg.type === 'resume') {
+          setIsPaused(false);
+          setStatus(incomingFileIndexRef.current !== -1 ? 'Resuming transfer...' : 'Ready to download.');
         }
         // -- Sender handling --
         else if (msg.type === 'request_file' && role === 'sender') {

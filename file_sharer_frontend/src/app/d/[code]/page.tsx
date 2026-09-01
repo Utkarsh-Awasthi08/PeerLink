@@ -25,6 +25,7 @@ export default function DownloadPage() {
   const {
     status,
     progress,
+    isPaused,
     speedBytesPerSec,
     etaSeconds,
     receivedFile,
@@ -115,7 +116,7 @@ export default function DownloadPage() {
 
         {/* Status line */}
         <div className="flex items-center justify-center gap-2 mb-6">
-          {downloadingIndex !== null && (
+          {downloadingIndex !== null && !isPaused && (
             <div className="animate-spin rounded-full h-4 w-4 border-2 border-blue-500 border-t-transparent flex-shrink-0" />
           )}
           <p className="text-gray-600 text-sm font-medium">{status}</p>
