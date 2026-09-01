@@ -52,19 +52,23 @@ export default function DownloadPage() {
   // Handle newly downloaded file
   useEffect(() => {
     if (!receivedFile) return;
-    const { blob, filename, index } = receivedFile;
+    const { blob, filename, index, handledByStream } = receivedFile;
 
-    const url = window.URL.createObjectURL(blob);
-    const link = document.createElement('a');
-    link.href = url;
-    link.download = filename;
-    document.body.appendChild(link);
-    link.click();
-    link.remove();
-    setTimeout(() => URL.revokeObjectURL(url), 5000);
+    if (handledByStream) {
+      toast.success(`"${filename}" saved directly to disk! 📥`);
+    } else {
+      const url = window.URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = filename;
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 5000);
+      toast.success(`"${filename}" downloaded! 📥`);
+    }
 
     setDownloadedIndices((prev) => new Set(prev).add(index));
-    toast.success(`"${filename}" downloaded! 📥`);
   }, [receivedFile]);
 
   // Process the download queue sequentially

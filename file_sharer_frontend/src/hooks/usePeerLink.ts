@@ -45,6 +45,7 @@ export interface ReceivedFile {
   blob: Blob;
   filename: string;
   index: number;
+  handledByStream?: boolean;
 }
 
 export interface FileManifestItem {
@@ -72,6 +73,7 @@ export function usePeerLink({ role, code: initialCode }: UsePeerLinkProps) {
 
   // Pull / On-Demand specific state
   const [manifest, setManifest] = useState<FileManifestItem[]>([]);
+  const manifestRef = useRef<FileManifestItem[]>([]);
   const [downloadingIndex, setDownloadingIndex] = useState<number | null>(null);
 
   // Auto-download trigger
@@ -95,6 +97,7 @@ export function usePeerLink({ role, code: initialCode }: UsePeerLinkProps) {
 
   // Receive buffers (reset per file)
   const receiveBufferRef = useRef<ArrayBuffer[]>([]);
+  const fileStreamRef = useRef<any>(null); // For File System Access API
   const receivedSizeRef = useRef<number>(0);
   const expectedSizeRef = useRef<number>(0);
   const incomingFilenameRef = useRef<string>('download');
@@ -298,6 +301,7 @@ export function usePeerLink({ role, code: initialCode }: UsePeerLinkProps) {
 
         // -- Receiver handling --
         if (msg.type === 'file_manifest') {
+          manifestRef.current = msg.manifest;
           setManifest(msg.manifest);
           setStatus('Ready to download.');
         } 
@@ -317,9 +321,17 @@ export function usePeerLink({ role, code: initialCode }: UsePeerLinkProps) {
         } 
         else if (msg.type === 'eof') {
           stopSpeedTicker();
-          const blob = new Blob(receiveBufferRef.current);
-          setReceivedFile({ blob, filename: incomingFilenameRef.current, index: msg.index });
-          receiveBufferRef.current = [];
+          
+          if (fileStreamRef.current) {
+            await fileStreamRef.current.close();
+            fileStreamRef.current = null;
+            setReceivedFile({ blob: new Blob([]), filename: incomingFilenameRef.current, index: msg.index, handledByStream: true });
+          } else {
+            const blob = new Blob(receiveBufferRef.current);
+            setReceivedFile({ blob, filename: incomingFilenameRef.current, index: msg.index, handledByStream: false });
+            receiveBufferRef.current = [];
+          }
+          
           setDownloadingIndex(null);
           setStatus(`File received ✅`);
           setProgress(100);
@@ -344,8 +356,13 @@ export function usePeerLink({ role, code: initialCode }: UsePeerLinkProps) {
           chunk = await decryptChunk(cryptoKeyRef.current, chunk);
         }
 
-        receiveBufferRef.current.push(chunk);
-        receivedSizeRef.current += chunk.byteLength;
+        if (fileStreamRef.current) {
+          await fileStreamRef.current.write(chunk);
+          receivedSizeRef.current += chunk.byteLength;
+        } else {
+          receiveBufferRef.current.push(chunk);
+          receivedSizeRef.current += chunk.byteLength;
+        }
       }
     };
   }, [role, streamFile, startSpeedTicker, stopSpeedTicker]);
@@ -457,9 +474,27 @@ export function usePeerLink({ role, code: initialCode }: UsePeerLinkProps) {
   }, []);
 
   /** Receiver requests a specific file from the sender */
-  const requestFile = useCallback((index: number) => {
+  const requestFile = useCallback(async (index: number) => {
     const dc = dcRef.current;
     if (dc && dc.readyState === 'open') {
+      const fileInfo = manifestRef.current.find(f => f.index === index);
+      if (!fileInfo) return;
+
+      if ('showSaveFilePicker' in window) {
+        try {
+          const handle = await (window as any).showSaveFilePicker({
+            suggestedName: fileInfo.name,
+          });
+          const writable = await handle.createWritable();
+          fileStreamRef.current = writable;
+        } catch (e) {
+          console.warn('Save prompt cancelled or failed.', e);
+          return;
+        }
+      } else {
+        fileStreamRef.current = null;
+      }
+
       dc.send(JSON.stringify({ type: 'request_file', index }));
       setDownloadingIndex(index);
     }
