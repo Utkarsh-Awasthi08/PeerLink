@@ -99,28 +99,28 @@ export default function Home() {
   const isSendingDone = sender.status.includes('sent successfully');
 
   return (
-    <div className="min-h-screen flex items-center justify-center bg-gradient-to-br from-blue-50 via-indigo-50 to-purple-50 p-4">
-      <div className="w-full max-w-lg">
+    <div className="min-h-screen flex items-center justify-center bg-gradient-to-br from-blue-50 via-indigo-50 to-purple-50 p-4 sm:p-6 md:p-8">
+      <div className="w-full max-w-2xl">
         {/* Card */}
-        <div className="bg-white rounded-2xl shadow-2xl overflow-hidden">
+        <div className="bg-white rounded-3xl shadow-2xl border border-gray-100 overflow-hidden transition-all">
 
           {/* Header */}
-          <div className="px-8 pt-8 pb-4 text-center">
-            <h1 className="text-4xl font-black tracking-tight text-transparent bg-clip-text bg-gradient-to-r from-blue-600 to-indigo-500">
+          <div className="px-8 pt-10 pb-5 text-center">
+            <h1 className="text-4xl sm:text-5xl font-black tracking-tight text-transparent bg-clip-text bg-gradient-to-r from-blue-600 to-indigo-600">
               PeerLink
             </h1>
-            <p className="text-sm text-gray-400 mt-1">Zero-server. Fully encrypted. Peer-to-peer.</p>
+            <p className="text-base text-gray-500 font-medium mt-1.5">Zero-server. Fully encrypted. Peer-to-peer.</p>
           </div>
 
           {/* Tabs */}
-          <div className="flex border-b border-gray-100 mx-2">
+          <div className="flex border-b border-gray-100 mx-4">
             {(['upload', 'download'] as const).map((tab) => (
               <button
                 key={tab}
                 id={`tab-${tab}`}
-                className={`flex-1 px-4 py-3.5 font-medium text-sm transition-colors ${activeTab === tab
-                  ? 'text-blue-600 border-b-2 border-blue-600 bg-blue-50/50'
-                  : 'text-gray-500 hover:text-gray-700 hover:bg-gray-50'
+                className={`flex-1 px-5 py-4 font-semibold text-base transition-colors ${activeTab === tab
+                  ? 'text-blue-600 border-b-2 border-blue-600 bg-blue-50/40'
+                  : 'text-gray-500 hover:text-gray-800 hover:bg-gray-50/60'
                 }`}
                 onClick={() => setActiveTab(tab)}
               >
@@ -129,7 +129,7 @@ export default function Home() {
             ))}
           </div>
 
-          <div className="p-6">
+          <div className="p-6 sm:p-8">
             {activeTab === 'upload' ? (
               /* ── Share tab ── */
               <div className="space-y-4">
@@ -267,8 +267,8 @@ export default function Home() {
           </div>
 
           {/* Footer */}
-          <div className="px-6 pb-5 flex items-center justify-center gap-1.5 text-xs text-gray-300">
-            <FiShield className="w-3 h-3" />
+          <div className="px-6 py-4 bg-gray-50/80 border-t border-gray-100 flex items-center justify-center gap-2 text-sm text-gray-600 font-medium">
+            <FiShield className="w-4 h-4 text-emerald-600 flex-shrink-0" />
             <span>End-to-end encrypted · Files never touch our servers</span>
           </div>
         </div>

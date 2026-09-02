@@ -103,13 +103,15 @@ export default function DownloadPage() {
   const isEncrypted = !!encKeyStr;
 
   return (
-    <div className="min-h-screen flex items-center justify-center bg-gradient-to-br from-blue-50 to-indigo-100 p-4">
-      <div className="bg-white rounded-2xl p-8 shadow-2xl max-w-md w-full">
+    <div className="min-h-screen flex items-center justify-center bg-gradient-to-br from-blue-50 via-indigo-50 to-purple-50 p-4 sm:p-6 md:p-8">
+      <div className="bg-white rounded-3xl p-6 sm:p-8 shadow-2xl border border-gray-100 max-w-2xl w-full transition-all">
 
         {/* Header */}
         <div className="text-center mb-6">
-          <h1 className="text-3xl font-bold text-blue-600">PeerLink</h1>
-          <p className="text-gray-400 text-sm mt-1">Secure P2P File Transfer</p>
+          <h1 className="text-4xl font-black tracking-tight text-transparent bg-clip-text bg-gradient-to-r from-blue-600 to-indigo-600">
+            PeerLink
+          </h1>
+          <p className="text-gray-500 text-sm font-medium mt-1">Secure P2P File Transfer</p>
         </div>
 
         {/* Room + encryption badges */}
@@ -228,8 +230,8 @@ export default function DownloadPage() {
         )}
 
         {/* Security notice */}
-        <div className="mt-8 pt-4 border-t border-gray-100 flex items-center justify-center gap-1.5 text-xs text-gray-400">
-          <FiShield className="w-3 h-3" />
+        <div className="mt-8 pt-4 border-t border-gray-100 flex items-center justify-center gap-2 text-sm text-gray-600 font-medium">
+          <FiShield className="w-4 h-4 text-emerald-600 flex-shrink-0" />
           <span>Files transfer directly between browsers — server never sees your data.</span>
         </div>
       </div>
