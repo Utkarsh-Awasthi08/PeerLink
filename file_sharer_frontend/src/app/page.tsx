@@ -6,7 +6,7 @@ import FileDownload from '@/components/FileDownload';
 import InviteCode from '@/components/InviteCode';
 import { usePeerLink } from '@/hooks/usePeerLink';
 import toast from 'react-hot-toast';
-import { FiPause, FiPlay, FiShield, FiX, FiShare2, FiFile } from 'react-icons/fi';
+import { FiPause, FiPlay, FiShield, FiX, FiShare2, FiFile, FiCheck } from 'react-icons/fi';
 
 /** Format bytes into a human-readable string */
 function formatBytes(bytes: number): string {
@@ -220,11 +220,21 @@ export default function Home() {
                           <li key={`${file.name}-${i}`} className="px-3 py-2 bg-gray-50 rounded-xl">
                             <div className="flex items-center justify-between mb-1">
                               <p className="text-xs font-medium text-gray-600 truncate max-w-[75%]">{file.name}</p>
-                              <span className="text-xs text-gray-400">{sender.fileProgresses[i] ?? 0}%</span>
+                              <span className="text-xs">
+                                {sender.fileProgresses[i] === 100 ? (
+                                  <span className="flex items-center gap-1 text-green-600 font-bold">
+                                    <FiCheck className="w-3.5 h-3.5" /> Sent
+                                  </span>
+                                ) : (
+                                  <span className="text-gray-400">{sender.fileProgresses[i] ?? 0}%</span>
+                                )}
+                              </span>
                             </div>
                             <div className="w-full bg-gray-200 rounded-full h-1.5">
                               <div
-                                className="bg-blue-400 h-1.5 rounded-full transition-all duration-300"
+                                className={`h-1.5 rounded-full transition-all duration-300 ${
+                                  sender.fileProgresses[i] === 100 ? 'bg-green-500' : 'bg-blue-400'
+                                }`}
                                 style={{ width: `${sender.fileProgresses[i] ?? 0}%` }}
                               />
                             </div>
