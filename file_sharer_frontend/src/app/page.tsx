@@ -193,7 +193,7 @@ export default function Home() {
                   <div className="space-y-4">
                     {/* Status pill */}
                     <div className={`flex items-center gap-2 text-sm font-medium px-4 py-2.5 rounded-xl border transition-all ${
-                      sender.status.includes('Disconnected') || sender.status.includes('error')
+                      sender.status.toLowerCase().includes('disconnect') || sender.status.toLowerCase().includes('error') || sender.status.toLowerCase().includes('fail')
                         ? 'bg-red-50 text-red-600 border-red-200 shadow-sm'
                         : isSendingDone
                         ? 'bg-green-50 text-green-700 border-green-200 shadow-sm'
@@ -201,7 +201,7 @@ export default function Home() {
                     }`}>
                       <span
                         className={`inline-block w-2.5 h-2.5 rounded-full flex-shrink-0 shadow-sm ${
-                          sender.status.includes('Disconnected') || sender.status.includes('error')
+                          sender.status.toLowerCase().includes('disconnect') || sender.status.toLowerCase().includes('error') || sender.status.toLowerCase().includes('fail')
                             ? 'bg-red-500'
                             : isSendingDone 
                             ? 'bg-green-500' 

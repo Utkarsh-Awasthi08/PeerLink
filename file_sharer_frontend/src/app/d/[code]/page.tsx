@@ -124,7 +124,7 @@ export default function DownloadPage() {
             <div className="animate-spin rounded-full h-4 w-4 border-2 border-blue-500 border-t-transparent flex-shrink-0" />
           )}
           <div className={`px-4 py-2 rounded-xl text-sm font-semibold transition-colors ${
-            status.includes('No peer found') || status.includes('Disconnected') || status.includes('error')
+            status.toLowerCase().includes('no peer found') || status.toLowerCase().includes('disconnect') || status.toLowerCase().includes('error') || status.toLowerCase().includes('fail')
               ? 'bg-red-50 text-red-600 border border-red-200 shadow-sm'
               : status.includes('received ✅')
               ? 'bg-green-50 text-green-700 border border-green-200 shadow-sm'

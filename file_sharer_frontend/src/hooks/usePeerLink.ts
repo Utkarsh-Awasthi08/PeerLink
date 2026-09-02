@@ -170,7 +170,12 @@ export function usePeerLink({ role, code: initialCode }: UsePeerLinkProps) {
     };
 
     pc.onconnectionstatechange = () => {
-      setStatus(`Connection: ${pc.connectionState}`);
+      const state = pc.connectionState;
+      if (state === 'disconnected' || state === 'failed' || state === 'closed') {
+        setStatus('Peer disconnected. Connection lost.');
+      } else {
+        setStatus(`Connection: ${state}`);
+      }
     };
 
     return pc;
