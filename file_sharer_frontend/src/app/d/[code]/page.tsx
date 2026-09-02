@@ -15,7 +15,6 @@ function formatBytes(bytes: number): string {
 
 export default function DownloadPage() {
   const [code, setCode] = useState<string>('');
-  const [encKeyStr, setEncKeyStr] = useState<string | undefined>(undefined);
 
   // Track all files that have been fully downloaded by index
   const [downloadedIndices, setDownloadedIndices] = useState<Set<number>>(new Set());
@@ -37,10 +36,8 @@ export default function DownloadPage() {
 
   useEffect(() => {
     const pathCode = window.location.pathname.split('/').pop() || '';
-    const keyStr = window.location.hash.slice(1) || undefined;
     setCode(pathCode);
-    setEncKeyStr(keyStr);
-    connect(pathCode, keyStr);
+    connect(pathCode);
 
     return () => {
       disconnect();
@@ -98,7 +95,6 @@ export default function DownloadPage() {
     }
   };
 
-  const isEncrypted = !!encKeyStr;
 
   return (
     <div className="min-h-screen flex items-center justify-center bg-gradient-to-br from-blue-50 via-indigo-50 to-purple-50 p-4 sm:p-6 md:p-8">
@@ -117,11 +113,9 @@ export default function DownloadPage() {
           <div className="text-sm bg-gray-100 text-gray-700 px-3 py-1.5 rounded-full font-mono">
             Room: <strong>{code}</strong>
           </div>
-          {isEncrypted && (
-            <div className="flex items-center gap-1 text-sm bg-green-100 text-green-700 px-3 py-1.5 rounded-full font-semibold">
-              <FiLock className="w-3.5 h-3.5" /> E2E Encrypted
-            </div>
-          )}
+          <div className="flex items-center gap-1 text-sm bg-green-100 text-green-700 px-3 py-1.5 rounded-full font-semibold">
+            <FiLock className="w-3.5 h-3.5" /> E2E Encrypted
+          </div>
         </div>
 
         {/* Status line */}

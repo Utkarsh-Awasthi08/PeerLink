@@ -234,7 +234,7 @@ export default function Home() {
                     )}
 
                     {/* Invite code + QR */}
-                    <InviteCode port={sender.code} encryptionKey={sender.encryptionKey} />
+                    <InviteCode port={sender.code} />
 
                     {/* Pause / Resume */}
                     {sender.progress > 0 && !isSendingDone && (

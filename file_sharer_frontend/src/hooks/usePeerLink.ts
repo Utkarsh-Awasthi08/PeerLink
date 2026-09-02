@@ -7,37 +7,7 @@ interface UsePeerLinkProps {
   code?: string;
 }
 
-// ─── E2EE Helpers (Web Crypto API - AES-GCM) ────────────────────────────────
-
-async function generateKey(): Promise<CryptoKey> {
-  return crypto.subtle.generateKey({ name: 'AES-GCM', length: 256 }, true, ['encrypt', 'decrypt']);
-}
-
-async function exportKey(key: CryptoKey): Promise<string> {
-  const raw = await crypto.subtle.exportKey('raw', key);
-  return btoa(String.fromCharCode(...new Uint8Array(raw)))
-    .replace(/\+/g, '-').replace(/\//g, '_').replace(/=/g, '');
-}
-
-async function importKey(b64: string): Promise<CryptoKey> {
-  const raw = Uint8Array.from(atob(b64.replace(/-/g, '+').replace(/_/g, '/')), c => c.charCodeAt(0));
-  return crypto.subtle.importKey('raw', raw, { name: 'AES-GCM' }, false, ['encrypt', 'decrypt']);
-}
-
-async function encryptChunk(key: CryptoKey, data: ArrayBuffer): Promise<ArrayBuffer> {
-  const iv = crypto.getRandomValues(new Uint8Array(12));
-  const encrypted = await crypto.subtle.encrypt({ name: 'AES-GCM', iv }, key, data);
-  const combined = new Uint8Array(12 + encrypted.byteLength);
-  combined.set(iv, 0);
-  combined.set(new Uint8Array(encrypted), 12);
-  return combined.buffer;
-}
-
-async function decryptChunk(key: CryptoKey, data: ArrayBuffer): Promise<ArrayBuffer> {
-  const iv = data.slice(0, 12);
-  const ciphertext = data.slice(12);
-  return crypto.subtle.decrypt({ name: 'AES-GCM', iv }, key, ciphertext);
-}
+// ─── WebRTC Data Channels are E2E encrypted by default via DTLS ──────────────
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -72,7 +42,6 @@ interface WindowWithFilePicker extends Window {
 
 export function usePeerLink({ role, code: initialCode }: UsePeerLinkProps) {
   const [code, setCode] = useState<string | null>(initialCode || null);
-  const [encryptionKey, setEncryptionKey] = useState<string | null>(null);
   const [status, setStatus] = useState<string>('Idle');
 
   // Single file progress tracker (tracks whatever is currently streaming)
@@ -97,7 +66,6 @@ export function usePeerLink({ role, code: initialCode }: UsePeerLinkProps) {
   const wsRef = useRef<WebSocket | null>(null);
   const pcRef = useRef<RTCPeerConnection | null>(null);
   const dcRef = useRef<RTCDataChannel | null>(null);
-  const cryptoKeyRef = useRef<CryptoKey | null>(null);
 
   // Transfer control
   const pausedRef = useRef(false);
@@ -298,9 +266,6 @@ export function usePeerLink({ role, code: initialCode }: UsePeerLinkProps) {
       const rawChunk = await slice.arrayBuffer();
 
       let chunk: ArrayBuffer = rawChunk;
-      if (cryptoKeyRef.current) {
-        chunk = await encryptChunk(cryptoKeyRef.current, rawChunk);
-      }
 
       dc.send(chunk);
       offset += rawChunk.byteLength;
@@ -395,11 +360,7 @@ export function usePeerLink({ role, code: initialCode }: UsePeerLinkProps) {
         }
 
       } else {
-        // Binary chunk — decrypt
         let chunk: ArrayBuffer = event.data;
-        if (cryptoKeyRef.current) {
-          chunk = await decryptChunk(cryptoKeyRef.current, chunk);
-        }
 
         if (fileStreamRef.current) {
           await fileStreamRef.current.write(chunk);
@@ -443,23 +404,9 @@ export function usePeerLink({ role, code: initialCode }: UsePeerLinkProps) {
 
   // ── Main connect ────────────────────────────────────────────────────────────
 
-  const connect = useCallback(async (sessionCode: string, keyString?: string) => {
+  const connect = useCallback(async (sessionCode: string) => {
     setCode(sessionCode);
     setStatus('Connecting to signaling server...');
-
-    if (role === 'sender') {
-      const key = await generateKey();
-      cryptoKeyRef.current = key;
-      const exported = await exportKey(key);
-      setEncryptionKey(exported);
-    } else if (keyString) {
-      try {
-        const key = await importKey(keyString);
-        cryptoKeyRef.current = key;
-      } catch {
-        console.error('Failed to import encryption key. Transfer will be unencrypted.');
-      }
-    }
 
     const ws = new WebSocket(wsUrl);
     wsRef.current = ws;
@@ -593,7 +540,6 @@ export function usePeerLink({ role, code: initialCode }: UsePeerLinkProps) {
 
   return {
     code,
-    encryptionKey,
     status,
     progress,
     fileProgresses,

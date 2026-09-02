@@ -6,10 +6,9 @@ import { FiCopy, FiCheck, FiLink, FiLock, FiMaximize2, FiX } from 'react-icons/f
 
 interface InviteCodeProps {
   port: string | null;
-  encryptionKey: string | null;
 }
 
-export default function InviteCode({ port, encryptionKey }: InviteCodeProps) {
+export default function InviteCode({ port }: InviteCodeProps) {
   const [copiedCode, setCopiedCode] = useState(false);
   const [copiedLink, setCopiedLink] = useState(false);
   const [showQrModal, setShowQrModal] = useState(false);
@@ -21,9 +20,7 @@ export default function InviteCode({ port, encryptionKey }: InviteCodeProps) {
 
   if (!port) return null;
 
-  const shareableLink = encryptionKey
-    ? `${appUrl}/d/${port}#${encryptionKey}`
-    : `${appUrl}/d/${port}`;
+  const shareableLink = `${appUrl}/d/${port}`;
 
   const copyCode = () => {
     navigator.clipboard.writeText(port);
@@ -43,11 +40,6 @@ export default function InviteCode({ port, encryptionKey }: InviteCodeProps) {
         {/* Header */}
         <div className="flex items-center gap-2 mb-1">
           <h3 className="text-lg font-semibold text-green-800">Ready to Share!</h3>
-          {encryptionKey && (
-            <span className="flex items-center gap-1 text-xs bg-green-200 text-green-800 px-2 py-0.5 rounded-full font-semibold">
-              <FiLock className="w-3 h-3" /> E2E Encrypted
-            </span>
-          )}
         </div>
         <p className="text-sm text-green-600 mb-4">
           Share this code or link. Keep this tab open until the transfer completes.
@@ -99,11 +91,6 @@ export default function InviteCode({ port, encryptionKey }: InviteCodeProps) {
           </div>
         </div>
 
-        {encryptionKey && (
-          <p className="mt-3 text-xs text-gray-400">
-            🔒 The encryption key is embedded in the link after <code>#</code> and is never sent to our server.
-          </p>
-        )}
       </div>
 
       {/* QR Modal */}
@@ -123,12 +110,6 @@ export default function InviteCode({ port, encryptionKey }: InviteCodeProps) {
               </button>
             </div>
             <QRCodeSVG value={shareableLink} size={220} includeMargin />
-            {encryptionKey && (
-              <div className="flex items-center gap-1.5 text-xs text-green-700 bg-green-50 px-3 py-1.5 rounded-full">
-                <FiLock className="w-3 h-3" />
-                <span>E2E Encrypted — key embedded in QR</span>
-              </div>
-            )}
             <p className="text-xs text-gray-500 text-center">
               Scan with any phone camera to start the download.
             </p>
