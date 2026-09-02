@@ -17,8 +17,9 @@ export default function FileDownload({ onDownload, isDownloading }: FileDownload
     setError('');
 
     const code = inviteCode.trim();
-    if (!code || code.length < 4) {
-      setError('Please enter a valid invite code.');
+    const isFiveDigitNumber = /^\d{5}$/.test(code);
+    if (!isFiveDigitNumber) {
+      setError('Please enter a valid 5-digit invite code.');
       return;
     }
 
@@ -43,12 +44,13 @@ export default function FileDownload({ onDownload, isDownloading }: FileDownload
             type="text"
             id="inviteCode"
             value={inviteCode}
-            onChange={(e) => setInviteCode(e.target.value)}
+            onChange={(e) => setInviteCode(e.target.value.replace(/\D/g, '').slice(0, 5))}
             placeholder="e.g. 48291"
             className="w-full px-4 py-2.5 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-400 font-mono text-lg tracking-widest text-center"
             disabled={isDownloading}
             required
-            maxLength={10}
+            maxLength={5}
+            pattern="\d{5}"
           />
           {error && <p className="mt-1 text-sm text-red-600">{error}</p>}
         </div>

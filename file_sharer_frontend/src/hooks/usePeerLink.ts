@@ -464,9 +464,21 @@ export function usePeerLink({ role, code: initialCode }: UsePeerLinkProps) {
     const ws = new WebSocket(wsUrl);
     wsRef.current = ws;
 
+    let connectionTimeout: ReturnType<typeof setTimeout>;
+
     ws.onopen = () => {
       setStatus('Connected. Waiting for peer...');
       sendSignalingMessage({ type: 'join', code: sessionCode, role });
+
+      if (role === 'receiver') {
+        // If sender doesn't exist, we won't get an offer. Time out after 10 seconds.
+        connectionTimeout = setTimeout(() => {
+          if (ws.readyState === WebSocket.OPEN) {
+            setStatus('No peer found for this code.');
+            ws.close();
+          }
+        }, 10000);
+      }
     };
 
     ws.onmessage = async (event) => {
@@ -484,6 +496,7 @@ export function usePeerLink({ role, code: initialCode }: UsePeerLinkProps) {
         }
       } else {
         if (msg.type === 'offer') {
+          if (connectionTimeout) clearTimeout(connectionTimeout);
           setStatus('Offer received. Connecting...');
           await handleOffer(msg.payload, sessionCode);
         } else if (msg.type === 'ice-candidate' && msg.payload) {
@@ -492,13 +505,13 @@ export function usePeerLink({ role, code: initialCode }: UsePeerLinkProps) {
       }
     };
 
-    ws.onerror = () => setStatus('WebSocket error. Please retry.');
+    ws.onerror = () => setStatus(prev => prev.includes('No peer found') ? prev : 'WebSocket error. Please retry.');
     ws.onclose = (e) => {
-      if (e.code === 1008) {
-        setStatus('Disconnected: Rate limit exceeded.');
-      } else {
-        setStatus('Disconnected.');
-      }
+      setStatus(prev => {
+        if (prev === 'No peer found for this code.') return prev;
+        if (e.code === 1008) return 'Disconnected: Rate limit exceeded.';
+        return 'Disconnected.';
+      });
     };
   }, [role, wsUrl, sendSignalingMessage, initiateWebRTC, handleOffer]);
 

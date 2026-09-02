@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useState, useRef } from 'react';
+import { useEffect, useState } from 'react';
 import { usePeerLink } from '@/hooks/usePeerLink';
 import TransferStats from '@/components/TransferStats';
 import toast from 'react-hot-toast';
@@ -16,7 +16,6 @@ function formatBytes(bytes: number): string {
 export default function DownloadPage() {
   const [code, setCode] = useState<string>('');
   const [encKeyStr, setEncKeyStr] = useState<string | undefined>(undefined);
-  const initialized = useRef(false);
 
   // Track all files that have been fully downloaded by index
   const [downloadedIndices, setDownloadedIndices] = useState<Set<number>>(new Set());
@@ -37,16 +36,15 @@ export default function DownloadPage() {
   } = usePeerLink({ role: 'receiver' });
 
   useEffect(() => {
-    if (initialized.current) return;
-    initialized.current = true;
-
     const pathCode = window.location.pathname.split('/').pop() || '';
     const keyStr = window.location.hash.slice(1) || undefined;
     setCode(pathCode);
     setEncKeyStr(keyStr);
     connect(pathCode, keyStr);
 
-    return () => disconnect();
+    return () => {
+      disconnect();
+    };
   }, [connect, disconnect]);
 
   // Handle newly downloaded file
