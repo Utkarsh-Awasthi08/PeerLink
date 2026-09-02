@@ -15,14 +15,21 @@ import org.springframework.web.socket.handler.TextWebSocketHandler;
 
 import java.io.IOException;
 import java.time.Duration;
+import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.Executors;
+import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.TimeUnit;
 
 @Component
 public class SignalingHandler extends TextWebSocketHandler {
 
-    // Maps: code -> session
     private final ConcurrentHashMap<String, WebSocketSession> senders = new ConcurrentHashMap<>();
     private final ConcurrentHashMap<String, WebSocketSession> receivers = new ConcurrentHashMap<>();
+
+    // Track connection times for absolute 10-minute expiry
+    private final ConcurrentHashMap<WebSocketSession, Long> connectionTimes = new ConcurrentHashMap<>();
+    private final ScheduledExecutorService scheduler = Executors.newSingleThreadScheduledExecutor();
 
     // Rate limiter per session: session ID -> Bucket
     // Allows 30 messages per minute, with a burst of 10 messages instantly.
@@ -33,6 +40,23 @@ public class SignalingHandler extends TextWebSocketHandler {
 
     public SignalingHandler(StringRedisTemplate redisTemplate) {
         this.redisTemplate = redisTemplate;
+
+        // Start cleanup task to aggressively expire WebSockets after 10 minutes
+        // This prevents resource leaks for abandoned sender tabs. WebRTC data channels
+        // take over after negotiation, so the WebSocket is unnecessary after a few seconds anyway.
+        scheduler.scheduleAtFixedRate(() -> {
+            long now = System.currentTimeMillis();
+            long maxDuration = 10 * 60 * 1000; // 10 minutes
+            for (Map.Entry<WebSocketSession, Long> entry : connectionTimes.entrySet()) {
+                if (now - entry.getValue() > maxDuration) {
+                    try {
+                        entry.getKey().close(new CloseStatus(1000, "Session expired after 10 minutes to save resources."));
+                    } catch (IOException e) {
+                        // ignore
+                    }
+                }
+            }
+        }, 1, 1, TimeUnit.MINUTES);
     }
 
     /** Creates a rate-limit bucket: 30 tokens per minute, refilling 1 token every 2 seconds. */
@@ -45,6 +69,7 @@ public class SignalingHandler extends TextWebSocketHandler {
     @Override
     public void afterConnectionEstablished(WebSocketSession session) {
         rateLimiters.put(session.getId(), newBucket());
+        connectionTimes.put(session, System.currentTimeMillis());
         System.out.println("New WebSocket connection: " + session.getId());
     }
 
@@ -84,6 +109,7 @@ public class SignalingHandler extends TextWebSocketHandler {
         senders.values().remove(session);
         receivers.values().remove(session);
         rateLimiters.remove(session.getId());
+        connectionTimes.remove(session);
         System.out.println("WebSocket connection closed: " + session.getId());
     }
 
