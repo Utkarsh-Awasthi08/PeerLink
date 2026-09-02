@@ -543,16 +543,16 @@ export function usePeerLink({ role, code: initialCode }: UsePeerLinkProps) {
           setDownloadingIndex(null);
           return;
         }
-      } else if (navigator.storage && navigator.storage.getDirectory) {
+      } else if (typeof navigator !== 'undefined' && navigator.storage && navigator.storage.getDirectory) {
         try {
           const root = await navigator.storage.getDirectory();
-          const handle = await root.getFileHandle(fileInfo.name, { create: true });
+          const handle = (await root.getFileHandle(fileInfo.name, { create: true })) as unknown as FileSystemHandleLike;
           const writable = await handle.createWritable();
           opfsFileHandleRef.current = handle;
           opfsWritableRef.current = writable;
           fileStreamRef.current = null;
-        } catch (e) {
-          console.warn('OPFS failed, falling back to RAM buffer', e);
+        } catch (err) {
+          console.warn('OPFS failed, falling back to RAM buffer', err);
           opfsFileHandleRef.current = null;
           opfsWritableRef.current = null;
           fileStreamRef.current = null;
