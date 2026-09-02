@@ -4,7 +4,7 @@ import { useEffect, useState, useRef } from 'react';
 import { usePeerLink } from '@/hooks/usePeerLink';
 import TransferStats from '@/components/TransferStats';
 import toast from 'react-hot-toast';
-import { FiShield, FiLock, FiCheckCircle, FiDownload, FiFile } from 'react-icons/fi';
+import { FiShield, FiLock, FiDownload, FiFile } from 'react-icons/fi';
 
 function formatBytes(bytes: number): string {
   if (bytes === 0) return '0 B';

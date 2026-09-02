@@ -54,6 +54,20 @@ export interface FileManifestItem {
   size: number;
 }
 
+interface FileSystemWritableStreamLike {
+  write(data: ArrayBuffer | Uint8Array): Promise<void>;
+  close(): Promise<void>;
+}
+
+interface FileSystemHandleLike {
+  createWritable(): Promise<FileSystemWritableStreamLike>;
+  getFile(): Promise<File>;
+}
+
+interface WindowWithFilePicker extends Window {
+  showSaveFilePicker?: (options?: { suggestedName?: string }) => Promise<FileSystemHandleLike>;
+}
+
 // ─── Hook ────────────────────────────────────────────────────────────────────
 
 export function usePeerLink({ role, code: initialCode }: UsePeerLinkProps) {
@@ -98,11 +112,11 @@ export function usePeerLink({ role, code: initialCode }: UsePeerLinkProps) {
 
   // Receive buffers (reset per file)
   const receiveBufferRef = useRef<ArrayBuffer[]>([]);
-  const fileStreamRef = useRef<any>(null); // For File System Access API
+  const fileStreamRef = useRef<FileSystemWritableStreamLike | null>(null); // For File System Access API
   
   // OPFS
-  const opfsFileHandleRef = useRef<any>(null);
-  const opfsWritableRef = useRef<any>(null);
+  const opfsFileHandleRef = useRef<FileSystemHandleLike | null>(null);
+  const opfsWritableRef = useRef<FileSystemWritableStreamLike | null>(null);
   
   const receivedSizeRef = useRef<number>(0);
   const expectedSizeRef = useRef<number>(0);
@@ -148,14 +162,16 @@ export function usePeerLink({ role, code: initialCode }: UsePeerLinkProps) {
 
   // Cleanup old OPFS files on mount
   useEffect(() => {
-    if (navigator.storage && navigator.storage.getDirectory) {
+    if (typeof navigator !== 'undefined' && navigator.storage && navigator.storage.getDirectory) {
       navigator.storage.getDirectory().then(async (root) => {
         try {
-          // @ts-ignore
-          for await (const [name] of root.entries()) {
-            await root.removeEntry(name, { recursive: true }).catch(() => {});
+          const rootWithEntries = root as unknown as { entries?: () => AsyncIterable<[string, unknown]> };
+          if (rootWithEntries.entries) {
+            for await (const [name] of rootWithEntries.entries()) {
+              await root.removeEntry(name, { recursive: true }).catch(() => {});
+            }
           }
-        } catch (e) {
+        } catch {
           // Ignore
         }
       }).catch(() => {});
@@ -514,15 +530,16 @@ export function usePeerLink({ role, code: initialCode }: UsePeerLinkProps) {
 
       setDownloadingIndex(index);
 
-      if ('showSaveFilePicker' in window) {
+      const win = window as WindowWithFilePicker;
+      if (typeof win.showSaveFilePicker === 'function') {
         try {
-          const handle = await (window as any).showSaveFilePicker({
+          const handle = await win.showSaveFilePicker({
             suggestedName: fileInfo.name,
           });
           const writable = await handle.createWritable();
           fileStreamRef.current = writable;
-        } catch (e) {
-          console.warn('Save prompt cancelled or failed.', e);
+        } catch (err) {
+          console.warn('Save prompt cancelled or failed.', err);
           setDownloadingIndex(null);
           return;
         }

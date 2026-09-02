@@ -4,7 +4,6 @@ import { useState, useEffect } from 'react';
 import FileUpload from '@/components/FileUpload';
 import FileDownload from '@/components/FileDownload';
 import InviteCode from '@/components/InviteCode';
-import TransferStats from '@/components/TransferStats';
 import { usePeerLink } from '@/hooks/usePeerLink';
 import toast from 'react-hot-toast';
 import { FiPause, FiPlay, FiShield, FiX, FiShare2, FiFile } from 'react-icons/fi';
