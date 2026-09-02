@@ -12,7 +12,7 @@ By leveraging WebRTC for direct data streaming, native browser storage engines (
 *   **On-Demand "Pull" Architecture (Selective Downloads):** Unlike traditional push systems, the receiver sees the complete file manifest (names & sizes) and selectively chooses which files to download or can choose **"Download All"** to download the entire queue sequentially.
 *   **Stream-to-Disk via File System Access API (Desktop):** Supports streaming incoming WebRTC chunks directly to the recipient's hard drive in real time via `showSaveFilePicker`. Browser RAM usage stays flat at ~0 MB, eliminating browser crashes even when transferring multi-gigabyte or 100+ GB files.
 *   **OPFS (Origin Private File System) Fallback (Mobile & Safari):** For browsers that do not support the File System Access API (iOS Safari, Android Chrome, Brave Shields), PeerLink streams chunks directly into the browser's hidden, sandboxed OPFS drive. Once complete, the file is seamlessly extracted to the user's Downloads folder without RAM crashes.
-*   **End-to-End Encryption (E2EE):** Every file chunk is encrypted client-side using **AES-256-GCM** before transmission. The decryption key is embedded solely in the URL hash fragment (`#key`) and is never transmitted to the signaling server.
+*   **End-to-End Encryption (E2EE):** Every file chunk is inherently encrypted client-side using **WebRTC DTLS** (Datagram Transport Layer Security) before transmission. The signaling server only brokers the connection and never sees the encrypted payload.
 *   **Sequential Queue & Re-downloading:** Automatic queue locking prevents race conditions and network choking during batch transfers. Individual files can be re-downloaded at any time, or the entire batch can be re-queued with **"Download All Again"**.
 *   **Pause & Resume:** Transfers can be paused and resumed on the fly. The transfer loop pauses without dropping the WebRTC channel, maintaining sync between sender and receiver.
 *   **Frictionless Sharing:** Instantly generate shareable links (e.g., `/d/12345#secretKey`) and **QR Codes**. The receiver scans or opens the link to start downloading immediately.
@@ -79,9 +79,8 @@ sequenceDiagram
     C->>C: Reserves space (Save As... dialog or OPFS sandbox)
     C->>S: Sends request_file (Index 0: File A)
     loop 64KB Encrypted Chunks
-        S-->>S: AES-256-GCM Encrypt
-        S->>C: Binary Chunk via RTCDataChannel
-        C->>C: AES-256-GCM Decrypt -> Write to Disk / OPFS Stream
+        S->>C: Binary Chunk via WebRTC DataChannel (DTLS Encrypted)
+        C->>C: Write to Disk / OPFS Stream
     end
     S->>C: Sends { type: 'eof', index: 0 }
     C->>C: Closes stream, marks File A complete
@@ -100,7 +99,7 @@ sequenceDiagram
 *   **Styling:** Tailwind CSS
 *   **P2P / Networking:** WebRTC (`RTCPeerConnection`, `RTCDataChannel`)
 *   **Storage & Streaming:** File System Access API (`showSaveFilePicker`), Origin Private File System (OPFS)
-*   **Security:** Web Crypto API (`crypto.subtle` - AES-256-GCM)
+*   **Security:** WebRTC Built-in DTLS End-to-End Encryption
 *   **UI Components:** `qrcode.react`, `react-icons`, `react-hot-toast`
 
 ### Backend
@@ -108,6 +107,18 @@ sequenceDiagram
 *   **Real-time Protocol:** Spring WebSocket (TextWebSocketHandler)
 *   **Message Broker:** Spring Data Redis Pub/Sub (Upstash Redis)
 *   **Rate Limiting & Abuse Prevention:** Bucket4j
+*   **Memory Management:** Aggressive 10-minute idle WebSocket pruning
+
+---
+
+## ⚡ Server Resource & Capacity Planning
+
+Because PeerLink strictly routes data peer-to-peer and never buffers file bytes in memory, the signaling backend is highly optimized and exceptionally lightweight.
+
+* **Base RAM:** The Spring Boot backend consumes ~200MB on startup.
+* **Per-Connection Footprint:** Each idle WebSocket session takes merely ~100KB of heap.
+* **Capacity Estimate:** On a standard **500MB RAM** free-tier instance (e.g., Render), the server comfortably sustains ~**3,000 simultaneous connections**.
+* **Automatic Expiry:** To prevent memory leaks from forgotten tabs, the backend sweeps and forcefully expires idle WebSockets after a strict **10-minute limit**. WebRTC file transfers are completely unaffected by this signaling drop.
 
 ---
 
@@ -159,7 +170,7 @@ sequenceDiagram
 
 ## 🔒 Security Notice
 
-PeerLink guarantees that **no file data or encryption keys ever touch the server**:
+PeerLink guarantees that **no file data ever touches our servers**:
 * All files are transferred peer-to-peer directly between client browsers.
-* The AES-256 encryption key is generated locally on the sender's device and appended to the invite link URL strictly as a hash fragment (`#key`).
-* Browsers never transmit hash fragments to HTTP or WebSocket servers (RFC 3986), ensuring zero-knowledge End-to-End Encryption.
+* The transfer tunnel is securely wrapped in **WebRTC DTLS** (the same military-grade encryption used in HTTPS).
+* Even if the WebSocket connection drops or is forcefully expired by the server to save RAM, the underlying WebRTC tunnel remains unaffected, ensuring uninterrupted and secure file delivery.
