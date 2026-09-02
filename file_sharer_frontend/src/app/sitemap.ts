@@ -5,7 +5,7 @@ export default function sitemap(): MetadataRoute.Sitemap {
     process.env.NEXT_PUBLIC_APP_URL ||
     (process.env.VERCEL_PROJECT_PRODUCTION_URL
       ? `https://${process.env.VERCEL_PROJECT_PRODUCTION_URL}`
-      : 'https://peerlink.vercel.app');
+      : 'https://p2p-peer-link.vercel.app');
 
   return [
     {

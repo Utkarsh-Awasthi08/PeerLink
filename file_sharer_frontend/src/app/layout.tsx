@@ -6,6 +6,7 @@ import { Toaster } from "react-hot-toast";
 const inter = Inter({ subsets: ['latin'] })
 
 export const metadata: Metadata = {
+  metadataBase: new URL('https://p2p-peer-link.vercel.app'),
   title: 'PeerLink - Fast, Secure & Private P2P File Sharing',
   description: 'Send and receive files of any size directly between browsers with zero server storage and end-to-end encryption using WebRTC.',
   keywords: ['P2P file sharing', 'WebRTC file transfer', 'peer to peer file share', 'secure file transfer', 'zero server file share', 'PeerLink'],

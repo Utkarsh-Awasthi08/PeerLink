@@ -1,5 +1,12 @@
 # PeerLink
 
+[![Live App](https://img.shields.io/badge/Live_Demo-p2p--peer--link.vercel.app-2563eb?style=for-the-badge&logo=vercel&logoColor=white)](https://p2p-peer-link.vercel.app/)
+[![Backend Status](https://img.shields.io/badge/Backend-Render-46E3B7?style=for-the-badge&logo=render&logoColor=white)](https://peerlink-backend-fl6p.onrender.com/actuator/health)
+[![License](https://img.shields.io/badge/License-MIT-blue.svg?style=for-the-badge)](LICENSE)
+
+> 🌐 **Live Website:** [https://p2p-peer-link.vercel.app](https://p2p-peer-link.vercel.app/)  
+> ⚡ **Signaling Server:** `https://peerlink-backend-fl6p.onrender.com`
+
 PeerLink is a modern, serverless, peer-to-peer file-sharing web application. It enables users to securely share files of virtually unlimited size directly between browsers without storing any data on an intermediate server. 
 
 By leveraging WebRTC for direct data streaming, native browser storage engines (**File System Access API** and **OPFS**), and the Web Crypto API for End-to-End Encryption, PeerLink guarantees absolute privacy, lightning-fast transfer speeds, and zero server storage overhead.
