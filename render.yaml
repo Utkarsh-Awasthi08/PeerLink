@@ -1,0 +1,11 @@
+services:
+  - type: web
+    name: peerlink-backend
+    runtime: docker
+    plan: free
+    rootDir: file_sharer_backend
+    dockerfilePath: Dockerfile
+    healthCheckPath: /health
+    envVars:
+      - key: REDIS_URL
+        sync: false
