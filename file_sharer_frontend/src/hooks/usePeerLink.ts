@@ -60,6 +60,9 @@ export function usePeerLink({ role, code: initialCode }: UsePeerLinkProps) {
   const [downloadingIndex, setDownloadingIndex] = useState<number | null>(null);
   const [isStreaming, setIsStreaming] = useState<boolean>(false);
 
+  // Sender-side: track which file indices the receiver has queued (but not yet started)
+  const [queuedFiles, setQueuedFiles] = useState<Set<number>>(new Set());
+
   // Auto-download trigger
   const [receivedFile, setReceivedFile] = useState<ReceivedFile | null>(null);
 
@@ -361,7 +364,17 @@ export function usePeerLink({ role, code: initialCode }: UsePeerLinkProps) {
         }
         // -- Sender handling --
         else if (msg.type === 'request_file' && role === 'sender') {
+          // Remove from queued set when the actual transfer begins
+          setQueuedFiles(prev => {
+            const next = new Set(prev);
+            next.delete(msg.index);
+            return next;
+          });
           streamFile(msg.index);
+        }
+        else if (msg.type === 'queue_file' && role === 'sender') {
+          // Receiver is signalling this file is in their local queue
+          setQueuedFiles(prev => new Set(prev).add(msg.index));
         }
 
       } else {
@@ -486,6 +499,44 @@ export function usePeerLink({ role, code: initialCode }: UsePeerLinkProps) {
     }
   }, []);
 
+  /**
+   * Sender dynamically appends more files to the live session.
+   * Sends an updated manifest over the open DataChannel — safe even mid-transfer
+   * because the DataChannel already separates JSON strings from binary chunks.
+   */
+  const addFiles = useCallback((newFiles: File[]) => {
+    const dc = dcRef.current;
+    if (!dc || dc.readyState !== 'open') return;
+
+    // Deduplicate by name+size against already-staged files
+    const existing = new Set(stagedFilesRef.current.map(f => `${f.name}-${f.size}`));
+    const unique = newFiles.filter(f => !existing.has(`${f.name}-${f.size}`));
+    if (unique.length === 0) return;
+
+    // Append to staged files — new files get indices starting from current length
+    const startIndex = stagedFilesRef.current.length;
+    stagedFilesRef.current = [...stagedFilesRef.current, ...unique];
+
+    // Initialise progress entries for the new files
+    setFileProgresses(prev => {
+      const next = { ...prev };
+      unique.forEach((_, i) => { next[startIndex + i] = 0; });
+      return next;
+    });
+
+    // Broadcast the full updated manifest to the receiver
+    const manifestPayload = stagedFilesRef.current.map((f, i) => ({ index: i, name: f.name, size: f.size }));
+    dc.send(JSON.stringify({ type: 'file_manifest', manifest: manifestPayload }));
+  }, []);
+
+  /** Receiver signals to Sender that a file is queued (not yet requested) */
+  const sendQueueSignal = useCallback((index: number) => {
+    const dc = dcRef.current;
+    if (dc && dc.readyState === 'open') {
+      dc.send(JSON.stringify({ type: 'queue_file', index }));
+    }
+  }, []);
+
   /** Receiver requests a specific file from the sender */
   const requestFile = useCallback(async (index: number) => {
     const dc = dcRef.current;
@@ -548,6 +599,7 @@ export function usePeerLink({ role, code: initialCode }: UsePeerLinkProps) {
     status,
     progress,
     fileProgresses,
+    queuedFiles,
     isPaused,
     isStreaming,
     speedBytesPerSec,
@@ -557,6 +609,8 @@ export function usePeerLink({ role, code: initialCode }: UsePeerLinkProps) {
     downloadingIndex,
     connect,
     shareFiles,
+    addFiles,
+    sendQueueSignal,
     requestFile,
     pause,
     resume,

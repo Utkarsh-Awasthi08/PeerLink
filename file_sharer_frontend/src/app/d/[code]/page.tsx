@@ -4,7 +4,7 @@ import { useEffect, useState } from 'react';
 import { usePeerLink } from '@/hooks/usePeerLink';
 import TransferStats from '@/components/TransferStats';
 import toast from 'react-hot-toast';
-import { FiShield, FiLock, FiDownload, FiFile } from 'react-icons/fi';
+import { FiShield, FiLock, FiDownload, FiFile, FiClock } from 'react-icons/fi';
 
 function formatBytes(bytes: number): string {
   if (bytes === 0) return '0 B';
@@ -30,6 +30,7 @@ export default function DownloadPage() {
     manifest,
     downloadingIndex,
     requestFile,
+    sendQueueSignal,
     connect,
     disconnect,
   } = usePeerLink({ role: 'receiver' });
@@ -80,7 +81,9 @@ export default function DownloadPage() {
   const handleDownloadAll = () => {
     if (allDownloaded) {
       // If all are downloaded, re-queue all of them
-      setDownloadQueue(manifest.map((f) => f.index));
+      const indices = manifest.map((f) => f.index);
+      setDownloadQueue(indices);
+      indices.forEach(idx => sendQueueSignal(idx));
     } else {
       // Otherwise, only queue the ones that haven't been downloaded yet
       const toDownload = manifest
@@ -88,6 +91,7 @@ export default function DownloadPage() {
         .filter((index) => !downloadedIndices.has(index));
       if (toDownload.length > 0) {
         setDownloadQueue(toDownload);
+        toDownload.forEach(idx => sendQueueSignal(idx));
         toast('Starting sequential download! 🚀', { icon: '🍿' });
       } else {
         toast('All files are already downloaded!');
@@ -175,6 +179,12 @@ export default function DownloadPage() {
                           <div className="text-xs font-bold text-blue-600 bg-blue-50 px-2.5 py-1.5 rounded-lg">
                             {progress}%
                           </div>
+                        ) : downloadQueue.includes(file.index) ? (
+                          // File is in the local download queue — waiting its turn
+                          <div className="flex items-center gap-1 text-xs font-semibold text-amber-600 bg-amber-50 border border-amber-200 px-2.5 py-1.5 rounded-lg">
+                            <FiClock className="w-3 h-3" />
+                            In queue
+                          </div>
                         ) : isDownloaded ? (
                           <button
                             onClick={() => requestFile(file.index)}
@@ -190,13 +200,18 @@ export default function DownloadPage() {
                           </button>
                         ) : (
                           <button
-                            onClick={() => requestFile(file.index)}
-                            disabled={isBusy}
-                            className={`flex items-center gap-1 px-3 py-1.5 rounded-lg text-xs font-bold transition-all shadow-sm ${
-                              isBusy 
-                                ? 'bg-gray-200 text-gray-400 cursor-not-allowed'
-                                : 'bg-blue-600 text-white hover:bg-blue-700 hover:shadow active:scale-95'
-                            }`}
+                            onClick={() => {
+                              if (isBusy) {
+                                // A transfer is in progress: add to queue instead
+                                if (!downloadQueue.includes(file.index)) {
+                                  setDownloadQueue(prev => [...prev, file.index]);
+                                  sendQueueSignal(file.index);
+                                }
+                              } else {
+                                requestFile(file.index);
+                              }
+                            }}
+                            className="flex items-center gap-1 px-3 py-1.5 rounded-lg text-xs font-bold transition-all shadow-sm bg-blue-600 text-white hover:bg-blue-700 hover:shadow active:scale-95"
                           >
                             <FiDownload className="w-3.5 h-3.5" />
                             Get

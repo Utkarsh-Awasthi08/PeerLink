@@ -1,12 +1,12 @@
 'use client';
 
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import FileUpload from '@/components/FileUpload';
 import FileDownload from '@/components/FileDownload';
 import InviteCode from '@/components/InviteCode';
 import { usePeerLink } from '@/hooks/usePeerLink';
 import toast from 'react-hot-toast';
-import { FiPause, FiPlay, FiShield, FiX, FiShare2, FiFile, FiCheck } from 'react-icons/fi';
+import { FiPause, FiPlay, FiShield, FiX, FiShare2, FiFile, FiCheck, FiPlusCircle, FiClock } from 'react-icons/fi';
 
 /** Format bytes into a human-readable string */
 function formatBytes(bytes: number): string {
@@ -24,6 +24,7 @@ export default function Home() {
   // ── Staged file queue state ─────────────────────────────────────────────────
   const [selectedFiles, setSelectedFiles] = useState<File[]>([]);
   const [isSharing, setIsSharing] = useState(false);
+  const addMoreInputRef = useRef<HTMLInputElement>(null);
 
   const sender = usePeerLink({ role: 'sender' });
   const receiver = usePeerLink({ role: 'receiver' });
@@ -70,6 +71,20 @@ export default function Home() {
     sender.disconnect();
     setIsSharing(false);
     setSelectedFiles([]);
+  };
+
+  /** Add more files dynamically while the session is live */
+  const handleAddMoreFiles = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const files = Array.from(e.target.files || []);
+    if (files.length === 0) return;
+    setSelectedFiles(prev => {
+      const existing = new Set(prev.map(f => `${f.name}-${f.size}`));
+      const unique = files.filter(f => !existing.has(`${f.name}-${f.size}`));
+      return [...prev, ...unique];
+    });
+    sender.addFiles(files);
+    // Reset input so same file can be re-selected later
+    if (addMoreInputRef.current) addMoreInputRef.current.value = '';
   };
 
   // ── Download / Receive flow ──────────────────────────────────────────────────
@@ -219,11 +234,15 @@ export default function Home() {
                         {selectedFiles.map((file, i) => (
                           <li key={`${file.name}-${i}`} className="px-3 py-2 bg-gray-50 rounded-xl">
                             <div className="flex items-center justify-between mb-1">
-                              <p className="text-xs font-medium text-gray-600 truncate max-w-[75%]">{file.name}</p>
+                              <p className="text-xs font-medium text-gray-600 truncate max-w-[70%]">{file.name}</p>
                               <span className="text-xs">
                                 {sender.fileProgresses[i] === 100 ? (
                                   <span className="flex items-center gap-1 text-green-600 font-bold">
                                     <FiCheck className="w-3.5 h-3.5" /> Sent
+                                  </span>
+                                ) : sender.queuedFiles.has(i) ? (
+                                  <span className="flex items-center gap-1 text-amber-600 font-semibold">
+                                    <FiClock className="w-3 h-3" /> Next requested
                                   </span>
                                 ) : (
                                   <span className="text-gray-400">{sender.fileProgresses[i] ?? 0}%</span>
@@ -233,7 +252,9 @@ export default function Home() {
                             <div className="w-full bg-gray-200 rounded-full h-1.5">
                               <div
                                 className={`h-1.5 rounded-full transition-all duration-300 ${
-                                  sender.fileProgresses[i] === 100 ? 'bg-green-500' : 'bg-blue-400'
+                                  sender.fileProgresses[i] === 100 ? 'bg-green-500' :
+                                  sender.queuedFiles.has(i) ? 'bg-amber-400' :
+                                  'bg-blue-400'
                                 }`}
                                 style={{ width: `${sender.fileProgresses[i] ?? 0}%` }}
                               />
@@ -263,6 +284,26 @@ export default function Home() {
                         )}
                       </div>
                     )}
+
+                    {/* + Add More Files (only shown when WebRTC is connected) */}
+                    {sender.status.includes('Peer connected') || sender.status.includes('Waiting for peer') || sender.status.includes('Sending') || sender.status.includes('sent successfully') ? (
+                      <>
+                        <input
+                          ref={addMoreInputRef}
+                          type="file"
+                          multiple
+                          className="hidden"
+                          onChange={handleAddMoreFiles}
+                        />
+                        <button
+                          onClick={() => addMoreInputRef.current?.click()}
+                          className="w-full flex items-center justify-center gap-2 py-2.5 px-4 rounded-xl text-sm font-semibold text-blue-600 bg-blue-50 hover:bg-blue-100 border border-blue-200 transition-all active:scale-[.98]"
+                        >
+                          <FiPlusCircle className="w-4 h-4" />
+                          + Add More Files
+                        </button>
+                      </>
+                    ) : null}
 
                     <button
                       id="btn-cancel"
