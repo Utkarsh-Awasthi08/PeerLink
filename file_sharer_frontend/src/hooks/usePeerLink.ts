@@ -283,8 +283,20 @@ export function usePeerLink({ role, code: initialCode }: UsePeerLinkProps) {
         });
       }
 
-      const slice = file.slice(offset, offset + CHUNK_SIZE);
-      const rawChunk = await slice.arrayBuffer();
+      let rawChunk: ArrayBuffer;
+      try {
+        const slice = file.slice(offset, offset + CHUNK_SIZE);
+        rawChunk = await slice.arrayBuffer();
+      } catch (err) {
+        console.error('Error reading file chunk (file may have been deleted or modified):', err);
+        stopSpeedTicker();
+        dc.send(JSON.stringify({ type: 'cancel', index }));
+        currentlyStreamingRef.current = null;
+        setIsStreaming(false);
+        setStatus('Error reading file. Transfer cancelled.');
+        setFileProgresses(prev => ({ ...prev, [index]: 0 }));
+        return;
+      }
 
       let chunk: ArrayBuffer = rawChunk;
 
