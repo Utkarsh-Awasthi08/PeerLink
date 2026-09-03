@@ -9,33 +9,38 @@
 
 PeerLink is a modern, serverless, peer-to-peer file-sharing web application. It enables users to securely share files of virtually unlimited size directly between browsers without storing any data on an intermediate server. 
 
-By leveraging WebRTC for direct data streaming, native browser storage engines (**File System Access API** and **OPFS**), and the Web Crypto API for End-to-End Encryption, PeerLink guarantees absolute privacy, lightning-fast transfer speeds, and zero server storage overhead.
+By leveraging WebRTC for direct data streaming, native browser storage engines (**File System Access API** and **OPFS**), and native WebRTC DTLS/SCTP end-to-end encryption, PeerLink guarantees absolute privacy, lightning-fast transfer speeds, and zero server storage overhead.
 
 ---
 
 ## 🚀 Key Features
 
-*   **Multi-File Batch Sharing:** Drag and drop multiple files at once. The sender stages the files, generates a single room link/QR code, and broadcasts a manifest to the receiver.
+*   **Multi-File Batch Sharing & Dynamic Staging:** Drag and drop multiple files at once to generate a room. With **Dynamic File Adding**, senders can seamlessly click **"+ Add More Files"** during an active session to add new files on the fly without reconnecting.
 *   **On-Demand "Pull" Architecture (Selective Downloads):** Unlike traditional push systems, the receiver sees the complete file manifest (names & sizes) and selectively chooses which files to download or can choose **"Download All"** to download the entire queue sequentially.
+*   **Smart Transfer Queue & Cross-Browser Synchronization:**
+    *   Clicking **"Get"** on multiple files or clicking **"Download All"** queues files sequentially.
+    *   **Live Queue Syncing:** The receiver sees an amber **"🕒 In queue"** badge, while the sender's screen synchronizes in real-time displaying **"🕒 Next requested"** for queued files over WebRTC data channels.
+    *   As soon as an active transfer completes, the next queued file starts automatically.
+*   **In-Flight Transfer Cancellation:** Either the sender or receiver can abort an active file transfer at any time with a single click. The transfer cleanly halts, discards partial disk/RAM buffers, and allows remaining queued files to proceed without dropping the WebRTC peer connection.
 *   **Stream-to-Disk via File System Access API (Desktop):** Supports streaming incoming WebRTC chunks directly to the recipient's hard drive in real time via `showSaveFilePicker`. Browser RAM usage stays flat at ~0 MB, eliminating browser crashes even when transferring multi-gigabyte or 100+ GB files.
 *   **OPFS (Origin Private File System) Fallback (Mobile & Safari):** For browsers that do not support the File System Access API (iOS Safari, Android Chrome, Brave Shields), PeerLink streams chunks directly into the browser's hidden, sandboxed OPFS drive. Once complete, the file is seamlessly extracted to the user's Downloads folder without RAM crashes.
-*   **End-to-End Encryption (E2EE):** Every file chunk is inherently encrypted client-side using **WebRTC DTLS** (Datagram Transport Layer Security) before transmission. The signaling server only brokers the connection and never sees the encrypted payload.
-*   **Sequential Queue & Re-downloading:** Automatic queue locking prevents race conditions and network choking during batch transfers. Individual files can be re-downloaded at any time, or the entire batch can be re-queued with **"Download All Again"**.
+*   **Native End-to-End Encryption (E2EE):** Every data channel packet is inherently protected using **WebRTC DTLS** (Datagram Transport Layer Security) with SCTP. File content never passes through an intermediate server, and all cryptographic handshakes occur directly between browsers.
 *   **Pause & Resume:** Transfers can be paused and resumed on the fly. The transfer loop pauses without dropping the WebRTC channel, maintaining sync between sender and receiver.
-*   **Frictionless Sharing:** Instantly generate shareable links (e.g., `/d/12345#secretKey`) and **QR Codes**. The receiver scans or opens the link to start downloading immediately.
-*   **Real-Time Progress & Transfer Metrics:** Live transfer speeds (MB/s), ETA calculations, and individual file progress bars.
-*   **Signaling Protection:** The Spring Boot backend uses **Bucket4j** token-bucket rate limiting to prevent signaling spam and resource exhaustion.
+*   **Frictionless Sharing:** Instantly generate shareable links (e.g., `/d/12345`) and **QR Codes**. The receiver scans or opens the link to start downloading immediately.
+*   **Real-Time Progress & Transfer Metrics:** Live transfer speeds (MB/s), ETA calculations, individual file progress bars, and transfer status indicators.
+*   **Signaling Protection:** The Spring Boot backend uses **Bucket4j** token-bucket rate limiting to prevent signaling spam, combined with an aggressive **10-minute idle connection reaper** to keep backend memory footprint negligible.
 
 ---
 
 ## 🌊 Advanced Architecture (Under the Hood)
 
-### 1. Receiver-Driven "Pull" Protocol
+### 1. Receiver-Driven "Pull" Protocol & Dynamic Multiplexing
 PeerLink operates on an on-demand pull model:
-1. **Manifest Push:** Upon WebRTC data channel establishment (`onopen`), the Sender sends a JSON `file_manifest` containing the file list, indices, and sizes.
-2. **File Request:** When the Receiver clicks **Get** (or the queue advances during **Download All**), the receiver sends a `request_file` message with the target file index.
+1. **Manifest Push & Dynamic Updates:** Upon WebRTC data channel establishment (`onopen`), the Sender sends a JSON `file_manifest`. Senders can stage new files mid-session; sending updated manifests over the open data channel without interrupting active binary chunk transfers.
+2. **File Request & Live Queueing:** When the Receiver clicks **Get** (or queues files during **Download All**), subsequent requests emit a `queue_file` control message. The Sender's UI reflects "Next requested" in real-time while the Receiver displays "In queue".
 3. **Chunk Streaming:** The Sender streams the requested file in 64 KB encrypted chunks until complete, followed by an `eof` message.
-4. **Queue Advance:** The receiver locks its state synchronously to avoid concurrent stream collisions, sequentially pulling each file one by one.
+4. **Queue Advance:** The receiver locks its state synchronously to avoid concurrent stream collisions. When an `eof` is processed, the queue engine automatically pops the next file index and issues a `request_file`.
+5. **In-Flight Cancellation:** Either peer can abort an active transfer via a `{ type: 'cancel', index }` control signal. The sender halts its chunk iteration, the receiver discards partial buffers, and the queue automatically transitions to the next item.
 
 ### 2. Zero-RAM Stream-to-Disk Architecture
 Traditional browser file downloads accumulate chunks in JavaScript memory (`Blob` in RAM), which crashes mobile browsers at ~500 MB – 1 GB and desktop tabs on huge files. PeerLink solves this using a two-tier streaming disk strategy:
@@ -79,8 +84,11 @@ sequenceDiagram
     S->>C: SDP Offer / Answer & ICE Exchange (via WS + Redis)
     Note over S,C: Direct WebRTC DataChannel Connected!
 
-    Note over S,C: 2. Manifest Exchange (Pull Architecture)
+    Note over S,C: 2. Manifest Exchange & Dynamic Staging
     S->>C: Sends JSON file_manifest [File A, File B]
+    opt Dynamic Adding
+        S->>C: Sends updated file_manifest [File A, File B, File C]
+    end
     
     Note over S,C: 3. Selective Streaming (Disk / OPFS)
     C->>C: Reserves space (Save As... dialog or OPFS sandbox)
@@ -92,7 +100,8 @@ sequenceDiagram
     S->>C: Sends { type: 'eof', index: 0 }
     C->>C: Closes stream, marks File A complete
 
-    Note over S,C: 4. Sequential Queue (Download All)
+    Note over S,C: 4. Queue Synchronization & Advancing
+    C->>S: Sends queue_file (Index 1: File B) -> Sender marks "Next requested"
     C->>S: Sends request_file (Index 1: File B)
     Note over S,C: Repeats stream-to-disk loop for File B...
 ```
@@ -102,11 +111,11 @@ sequenceDiagram
 ## 🛠️ Tech Stack
 
 ### Frontend
-*   **Framework:** Next.js 14 / React
-*   **Styling:** Tailwind CSS
+*   **Framework:** Next.js 16 (Turbopack) / React 19
+*   **Styling:** Tailwind CSS v4
 *   **P2P / Networking:** WebRTC (`RTCPeerConnection`, `RTCDataChannel`)
 *   **Storage & Streaming:** File System Access API (`showSaveFilePicker`), Origin Private File System (OPFS)
-*   **Security:** WebRTC Built-in DTLS End-to-End Encryption
+*   **Security:** Native WebRTC DTLS / SCTP End-to-End Encryption
 *   **UI Components:** `qrcode.react`, `react-icons`, `react-hot-toast`
 
 ### Backend
