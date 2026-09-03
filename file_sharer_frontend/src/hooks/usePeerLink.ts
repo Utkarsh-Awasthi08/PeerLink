@@ -73,6 +73,7 @@ export function usePeerLink({ role, code: initialCode }: UsePeerLinkProps) {
   // Transfer control
   const pausedRef = useRef(false);
   const resumeResolverRef = useRef<(() => void) | null>(null);
+  const cancelledRef = useRef(false);  // signals streamFile loop to abort
   const stagedFilesRef = useRef<File[]>([]);
   const currentlyStreamingRef = useRef<number | null>(null);
 
@@ -232,6 +233,7 @@ export function usePeerLink({ role, code: initialCode }: UsePeerLinkProps) {
     const file = stagedFilesRef.current[index];
     if (!file) return;
 
+    cancelledRef.current = false;          // reset cancellation flag for this transfer
     currentlyStreamingRef.current = index;
     setIsStreaming(true);
     setStatus(`Sending: ${file.name}...`);
@@ -253,6 +255,17 @@ export function usePeerLink({ role, code: initialCode }: UsePeerLinkProps) {
 
     while (offset < file.size) {
       await waitIfPaused();
+
+      // Abort if cancelled externally
+      if (cancelledRef.current) {
+        stopSpeedTicker();
+        dc.send(JSON.stringify({ type: 'cancel', index }));
+        currentlyStreamingRef.current = null;
+        setIsStreaming(false);
+        setStatus('Transfer cancelled.');
+        setFileProgresses(prev => ({ ...prev, [index]: 0 }));
+        return;
+      }
 
       // Ensure we haven't been asked to stream a different file abruptly
       if (currentlyStreamingRef.current !== index) {
@@ -361,6 +374,35 @@ export function usePeerLink({ role, code: initialCode }: UsePeerLinkProps) {
         else if (msg.type === 'resume') {
           setIsPaused(false);
           setStatus(incomingFileIndexRef.current !== -1 ? 'Resuming transfer...' : 'Ready to download.');
+        }
+        // cancel sent by the OTHER side
+        else if (msg.type === 'cancel') {
+          stopSpeedTicker();
+          if (role === 'receiver') {
+            // Peer (sender) cancelled — discard any partial data we received
+            receiveBufferRef.current = [];
+            receivedSizeRef.current = 0;
+            if (fileStreamRef.current) {
+              try { await fileStreamRef.current.close(); } catch { /* ignore */ }
+              fileStreamRef.current = null;
+            }
+            if (opfsWritableRef.current) {
+              try { await opfsWritableRef.current.close(); } catch { /* ignore */ }
+              opfsWritableRef.current = null;
+              opfsFileHandleRef.current = null;
+            }
+            setDownloadingIndex(null);
+            setProgress(0);
+            setStatus('Transfer cancelled by sender.');
+          } else {
+            // Peer (receiver) cancelled — stop our streaming loop
+            cancelledRef.current = true;
+            // If paused, unblock the pause-wait so the cancel check triggers immediately
+            if (resumeResolverRef.current) {
+              resumeResolverRef.current();
+              resumeResolverRef.current = null;
+            }
+          }
         }
         // -- Sender handling --
         else if (msg.type === 'request_file' && role === 'sender') {
@@ -537,6 +579,41 @@ export function usePeerLink({ role, code: initialCode }: UsePeerLinkProps) {
     }
   }, []);
 
+  /** Cancel the currently active transfer (works on both sender and receiver) */
+  const cancelTransfer = useCallback(() => {
+    const dc = dcRef.current;
+    if (!dc || dc.readyState !== 'open') return;
+
+    if (role === 'sender') {
+      // Signal the streaming loop to stop
+      cancelledRef.current = true;
+      // Unblock if currently paused so the cancel flag is checked immediately
+      if (resumeResolverRef.current) {
+        resumeResolverRef.current();
+        resumeResolverRef.current = null;
+      }
+      // Note: the streamFile loop itself will send the 'cancel' msg to the receiver
+    } else {
+      // Receiver side: discard partial data and notify sender
+      stopSpeedTicker();
+      receiveBufferRef.current = [];
+      receivedSizeRef.current = 0;
+      if (fileStreamRef.current) {
+        fileStreamRef.current.close().catch(() => {});
+        fileStreamRef.current = null;
+      }
+      if (opfsWritableRef.current) {
+        opfsWritableRef.current.close().catch(() => {});
+        opfsWritableRef.current = null;
+        opfsFileHandleRef.current = null;
+      }
+      setDownloadingIndex(null);
+      setProgress(0);
+      setStatus('Transfer cancelled.');
+      dc.send(JSON.stringify({ type: 'cancel', index: incomingFileIndexRef.current }));
+    }
+  }, [role, stopSpeedTicker]);
+
   /** Receiver requests a specific file from the sender */
   const requestFile = useCallback(async (index: number) => {
     const dc = dcRef.current;
@@ -611,6 +688,7 @@ export function usePeerLink({ role, code: initialCode }: UsePeerLinkProps) {
     shareFiles,
     addFiles,
     sendQueueSignal,
+    cancelTransfer,
     requestFile,
     pause,
     resume,

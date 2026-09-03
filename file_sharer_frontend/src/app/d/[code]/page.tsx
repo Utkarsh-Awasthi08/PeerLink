@@ -4,7 +4,7 @@ import { useEffect, useState } from 'react';
 import { usePeerLink } from '@/hooks/usePeerLink';
 import TransferStats from '@/components/TransferStats';
 import toast from 'react-hot-toast';
-import { FiShield, FiLock, FiDownload, FiFile, FiClock } from 'react-icons/fi';
+import { FiShield, FiLock, FiDownload, FiFile, FiClock, FiX } from 'react-icons/fi';
 
 function formatBytes(bytes: number): string {
   if (bytes === 0) return '0 B';
@@ -31,6 +31,7 @@ export default function DownloadPage() {
     downloadingIndex,
     requestFile,
     sendQueueSignal,
+    cancelTransfer,
     connect,
     disconnect,
   } = usePeerLink({ role: 'receiver' });
@@ -85,10 +86,10 @@ export default function DownloadPage() {
       setDownloadQueue(indices);
       indices.forEach(idx => sendQueueSignal(idx));
     } else {
-      // Otherwise, only queue the ones that haven't been downloaded yet
+      // Only queue files not yet downloaded AND not currently transferring
       const toDownload = manifest
         .map((f) => f.index)
-        .filter((index) => !downloadedIndices.has(index));
+        .filter((index) => !downloadedIndices.has(index) && index !== downloadingIndex);
       if (toDownload.length > 0) {
         setDownloadQueue(toDownload);
         toDownload.forEach(idx => sendQueueSignal(idx));
@@ -176,8 +177,18 @@ export default function DownloadPage() {
                       
                       <div className="flex-shrink-0 ml-2">
                         {isDownloading ? (
-                          <div className="text-xs font-bold text-blue-600 bg-blue-50 px-2.5 py-1.5 rounded-lg">
-                            {progress}%
+                          // Actively downloading — show progress + cancel button
+                          <div className="flex items-center gap-2">
+                            <div className="text-xs font-bold text-blue-600 bg-blue-50 px-2.5 py-1.5 rounded-lg">
+                              {progress}%
+                            </div>
+                            <button
+                              onClick={cancelTransfer}
+                              title="Cancel this download"
+                              className="p-1.5 rounded-lg bg-red-50 text-red-400 hover:bg-red-100 hover:text-red-600 border border-red-200 transition-all active:scale-95"
+                            >
+                              <FiX className="w-3.5 h-3.5" />
+                            </button>
                           </div>
                         ) : downloadQueue.includes(file.index) ? (
                           // File is in the local download queue — waiting its turn

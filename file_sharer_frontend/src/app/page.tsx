@@ -267,20 +267,30 @@ export default function Home() {
                     {/* Invite code + QR */}
                     <InviteCode port={sender.code} />
 
-                    {/* Pause / Resume */}
+                    {/* Pause / Resume / Cancel */}
                     {sender.progress > 0 && !isSendingDone && (
-                      <div className="flex flex-col gap-2 mt-4">
+                      <div className="flex gap-2 mt-4">
                         {sender.isStreaming && (
-                          <button
-                            onClick={sender.isPaused ? sender.resume : sender.pause}
-                            className={`w-full py-3 px-4 rounded-xl font-bold flex justify-center items-center gap-2 transition-all shadow-sm
-                              ${sender.isPaused 
-                                ? 'bg-green-500 text-white hover:bg-green-600' 
-                                : 'bg-yellow-100 text-yellow-700 hover:bg-yellow-200'}`}
-                          >
-                            {sender.isPaused ? <FiPlay className="w-5 h-5" /> : <FiPause className="w-5 h-5" />}
-                            {sender.isPaused ? 'Resume' : 'Pause'}
-                          </button>
+                          <>
+                            <button
+                              onClick={sender.isPaused ? sender.resume : sender.pause}
+                              className={`flex-1 py-3 px-4 rounded-xl font-bold flex justify-center items-center gap-2 transition-all shadow-sm
+                                ${sender.isPaused 
+                                  ? 'bg-green-500 text-white hover:bg-green-600' 
+                                  : 'bg-yellow-100 text-yellow-700 hover:bg-yellow-200'}`}
+                            >
+                              {sender.isPaused ? <FiPlay className="w-5 h-5" /> : <FiPause className="w-5 h-5" />}
+                              {sender.isPaused ? 'Resume' : 'Pause'}
+                            </button>
+                            <button
+                              onClick={sender.cancelTransfer}
+                              title="Cancel current file transfer"
+                              className="py-3 px-4 rounded-xl font-bold flex justify-center items-center gap-2 transition-all shadow-sm bg-red-50 text-red-500 hover:bg-red-100 border border-red-200 active:scale-95"
+                            >
+                              <FiX className="w-5 h-5" />
+                              Cancel
+                            </button>
+                          </>
                         )}
                       </div>
                     )}
