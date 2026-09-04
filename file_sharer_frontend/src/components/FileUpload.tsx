@@ -33,6 +33,7 @@ export default function FileUpload({ onFilesSelected, disabled = false }: FileUp
   });
 
   return (
+    <>
     <div
       {...getRootProps()}
       className={`
@@ -59,7 +60,9 @@ export default function FileUpload({ onFilesSelected, disabled = false }: FileUp
             <p className="text-sm text-gray-500 font-medium">Any file type · Unlimited size · Multiple files supported</p>
             
             <button
+              type="button"
               onClick={(e) => {
+                e.preventDefault();
                 e.stopPropagation();
                 folderInputRef.current?.click();
               }}
@@ -68,14 +71,6 @@ export default function FileUpload({ onFilesSelected, disabled = false }: FileUp
               <FiFolder className="w-4 h-4 text-blue-500" />
               Select Folder
             </button>
-            <input
-              type="file"
-              {...{ webkitdirectory: "true" }}
-              multiple
-              ref={folderInputRef}
-              onChange={handleFolderSelect}
-              className="hidden"
-            />
             <div className="inline-flex items-center gap-1.5 px-3 py-1 mt-2 bg-amber-50 border border-amber-200/80 rounded-full text-xs font-medium text-amber-800">
               <span>💡 Sending to mobile? Keep under 6GB for best stability</span>
             </div>
@@ -83,5 +78,14 @@ export default function FileUpload({ onFilesSelected, disabled = false }: FileUp
         )}
       </div>
     </div>
+    <input
+      type="file"
+      {...{ webkitdirectory: "true" }}
+      multiple
+      ref={folderInputRef}
+      onChange={handleFolderSelect}
+      className="hidden"
+    />
+    </>
   );
 }
