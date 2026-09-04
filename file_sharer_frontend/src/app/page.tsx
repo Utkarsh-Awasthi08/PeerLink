@@ -236,7 +236,7 @@ export default function Home() {
                             <div className="flex items-center justify-between mb-1">
                               <p className="text-xs font-medium text-gray-600 truncate max-w-[70%]">{file.name}</p>
                               <span className="text-xs">
-                                {sender.fileProgresses[i] === 100 ? (
+                              {sender.completedFiles.has(i) ? (
                                   <span className="flex items-center gap-1 text-green-600 font-bold">
                                     <FiCheck className="w-3.5 h-3.5" /> Sent
                                   </span>
@@ -252,7 +252,7 @@ export default function Home() {
                             <div className="w-full bg-gray-200 rounded-full h-1.5">
                               <div
                                 className={`h-1.5 rounded-full transition-all duration-300 ${
-                                  sender.fileProgresses[i] === 100 ? 'bg-green-500' :
+                                  sender.completedFiles.has(i) ? 'bg-green-500' :
                                   sender.queuedFiles.has(i) ? 'bg-amber-400' :
                                   'bg-blue-400'
                                 }`}

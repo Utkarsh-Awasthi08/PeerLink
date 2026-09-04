@@ -1,8 +1,8 @@
 'use client';
 
-import { useCallback } from 'react';
+import { useCallback, useRef } from 'react';
 import { useDropzone } from 'react-dropzone';
-import { FiUploadCloud } from 'react-icons/fi';
+import { FiUploadCloud, FiFolder } from 'react-icons/fi';
 
 interface FileUploadProps {
   onFilesSelected: (files: File[]) => void;
@@ -16,6 +16,15 @@ export default function FileUpload({ onFilesSelected, disabled = false }: FileUp
     },
     [onFilesSelected],
   );
+
+  const folderInputRef = useRef<HTMLInputElement>(null);
+
+  const handleFolderSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
+    if (e.target.files && e.target.files.length > 0) {
+      onFilesSelected(Array.from(e.target.files));
+      e.target.value = ''; // reset to allow selecting same folder again
+    }
+  };
 
   const { getRootProps, getInputProps, isDragActive } = useDropzone({
     onDrop,
@@ -48,6 +57,25 @@ export default function FileUpload({ onFilesSelected, disabled = false }: FileUp
               Drag &amp; drop files here, or <span className="text-blue-600 underline hover:text-blue-700">click to browse</span>
             </p>
             <p className="text-sm text-gray-500 font-medium">Any file type · Unlimited size · Multiple files supported</p>
+            
+            <button
+              onClick={(e) => {
+                e.stopPropagation();
+                folderInputRef.current?.click();
+              }}
+              className="mt-2 flex items-center gap-2 px-4 py-2 bg-white border border-gray-200 rounded-xl hover:bg-gray-50 hover:border-gray-300 transition-all shadow-sm text-sm font-semibold text-gray-700"
+            >
+              <FiFolder className="w-4 h-4 text-blue-500" />
+              Select Folder
+            </button>
+            <input
+              type="file"
+              {...{ webkitdirectory: "true" }}
+              multiple
+              ref={folderInputRef}
+              onChange={handleFolderSelect}
+              className="hidden"
+            />
             <div className="inline-flex items-center gap-1.5 px-3 py-1 mt-2 bg-amber-50 border border-amber-200/80 rounded-full text-xs font-medium text-amber-800">
               <span>💡 Sending to mobile? Keep under 6GB for best stability</span>
             </div>

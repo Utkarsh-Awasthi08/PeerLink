@@ -62,6 +62,7 @@ export function usePeerLink({ role, code: initialCode }: UsePeerLinkProps) {
 
   // Sender-side: track which file indices the receiver has queued (but not yet started)
   const [queuedFiles, setQueuedFiles] = useState<Set<number>>(new Set());
+  const [completedFiles, setCompletedFiles] = useState<Set<number>>(new Set());
 
   // Auto-download trigger
   const [receivedFile, setReceivedFile] = useState<ReceivedFile | null>(null);
@@ -246,8 +247,8 @@ export function usePeerLink({ role, code: initialCode }: UsePeerLinkProps) {
       size: file.size,
     }));
 
-    const CHUNK_SIZE = 64 * 1024; // 64 KB
-    const LOW_WATERMARK = 1 * 1024 * 1024; // 1 MB backpressure
+    const CHUNK_SIZE = 256 * 1024; // 256 KB
+    const LOW_WATERMARK = 8 * 1024 * 1024; // 8 MB backpressure
     let offset = 0;
     let bytesSentRef = 0;
 
@@ -311,6 +312,7 @@ export function usePeerLink({ role, code: initialCode }: UsePeerLinkProps) {
 
     stopSpeedTicker();
     dc.send(JSON.stringify({ type: 'eof', index }));
+    setCompletedFiles(prev => new Set(prev).add(index));
     currentlyStreamingRef.current = null;
     setIsStreaming(false);
     setStatus(`Waiting for peer to request a file...`);
@@ -544,6 +546,7 @@ export function usePeerLink({ role, code: initialCode }: UsePeerLinkProps) {
     const newProgresses: Record<number, number> = {};
     files.forEach((_, i) => newProgresses[i] = 0);
     setFileProgresses(newProgresses);
+    setCompletedFiles(new Set());
 
     const dc = dcRef.current;
     if (dc && dc.readyState === 'open') {
@@ -681,6 +684,7 @@ export function usePeerLink({ role, code: initialCode }: UsePeerLinkProps) {
     wsRef.current?.close();
     dcRef.current?.close();
     pcRef.current?.close();
+    setCompletedFiles(new Set());
   }, [stopSpeedTicker]);
 
   return {
@@ -689,6 +693,7 @@ export function usePeerLink({ role, code: initialCode }: UsePeerLinkProps) {
     progress,
     fileProgresses,
     queuedFiles,
+    completedFiles,
     isPaused,
     isStreaming,
     speedBytesPerSec,
