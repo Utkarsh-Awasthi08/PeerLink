@@ -78,7 +78,12 @@ export default function DownloadPage() {
       document.body.appendChild(link);
       link.click();
       link.remove();
-      setTimeout(() => URL.revokeObjectURL(url), 5000);
+      setTimeout(() => {
+        URL.revokeObjectURL(url);
+        if (receivedFile.cleanup) {
+          receivedFile.cleanup();
+        }
+      }, 10000);
       toast.success(`"${filename}" downloaded! 📥`);
     }
 

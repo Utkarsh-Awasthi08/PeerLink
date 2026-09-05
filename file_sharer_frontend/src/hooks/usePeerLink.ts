@@ -1,4 +1,5 @@
 import { useState, useRef, useCallback, useEffect } from 'react';
+import toast from 'react-hot-toast';
 
 type Role = 'sender' | 'receiver';
 
@@ -16,6 +17,7 @@ export interface ReceivedFile {
   filename: string;
   index: number;
   handledByStream?: boolean;
+  cleanup?: () => void;
 }
 
 export interface FileManifestItem {
@@ -95,6 +97,26 @@ export function usePeerLink({ role, code: initialCode }: UsePeerLinkProps) {
   const expectedSizeRef = useRef<number>(0);
   const incomingFilenameRef = useRef<string>('download');
   const incomingFileIndexRef = useRef<number>(-1);
+  const wakeLockRef = useRef<any>(null);
+
+  const requestWakeLock = useCallback(async () => {
+    try {
+      if ('wakeLock' in navigator) {
+        wakeLockRef.current = await (navigator as any).wakeLock.request('screen');
+      }
+    } catch (err) {
+      // Ignore wake lock errors
+    }
+  }, []);
+
+  const releaseWakeLock = useCallback(async () => {
+    if (wakeLockRef.current) {
+      try {
+        await wakeLockRef.current.release();
+        wakeLockRef.current = null;
+      } catch (err) {}
+    }
+  }, []);
 
   const wsUrl = process.env.NEXT_PUBLIC_WS_URL || 'ws://localhost:8080/signaling';
 
@@ -238,6 +260,7 @@ export function usePeerLink({ role, code: initialCode }: UsePeerLinkProps) {
     currentlyStreamingRef.current = index;
     setIsStreaming(true);
     setStatus(`Sending: ${file.name}...`);
+    requestWakeLock();
     
     // Announce metadata
     dc.send(JSON.stringify({
@@ -311,6 +334,7 @@ export function usePeerLink({ role, code: initialCode }: UsePeerLinkProps) {
     }
 
     stopSpeedTicker();
+    releaseWakeLock();
     dc.send(JSON.stringify({ type: 'eof', index }));
     setCompletedFiles(prev => new Set(prev).add(index));
     currentlyStreamingRef.current = null;
@@ -361,6 +385,7 @@ export function usePeerLink({ role, code: initialCode }: UsePeerLinkProps) {
         } 
         else if (msg.type === 'eof') {
           stopSpeedTicker();
+          releaseWakeLock();
           
           if (fileStreamRef.current) {
             await fileStreamRef.current.close();
@@ -370,7 +395,16 @@ export function usePeerLink({ role, code: initialCode }: UsePeerLinkProps) {
             await opfsWritableRef.current.close();
             opfsWritableRef.current = null;
             const file = await opfsFileHandleRef.current.getFile();
-            setReceivedFile({ blob: file, filename: incomingFilenameRef.current, index: msg.index, handledByStream: false });
+            const fileNameToRemove = incomingFilenameRef.current;
+            const opfsCleanup = () => {
+              if (typeof navigator !== 'undefined' && navigator.storage && navigator.storage.getDirectory) {
+                navigator.storage.getDirectory().then(root => {
+                  root.removeEntry(fileNameToRemove).catch(() => {});
+                }).catch(() => {});
+              }
+            };
+            setReceivedFile({ blob: file, filename: incomingFilenameRef.current, index: msg.index, handledByStream: false, cleanup: opfsCleanup });
+            opfsFileHandleRef.current = null;
           } else {
             const blob = new Blob(receiveBufferRef.current);
             setReceivedFile({ blob, filename: incomingFilenameRef.current, index: msg.index, handledByStream: false });
@@ -392,6 +426,7 @@ export function usePeerLink({ role, code: initialCode }: UsePeerLinkProps) {
         // cancel sent by the OTHER side
         else if (msg.type === 'cancel') {
           stopSpeedTicker();
+          releaseWakeLock();
           if (role === 'receiver') {
             // Peer (sender) cancelled — discard any partial data we received
             receiveBufferRef.current = [];
@@ -636,6 +671,21 @@ export function usePeerLink({ role, code: initialCode }: UsePeerLinkProps) {
       const fileInfo = manifestRef.current.find(f => f.index === index);
       if (!fileInfo) return;
 
+      if (typeof navigator !== 'undefined' && navigator.storage && navigator.storage.estimate) {
+        try {
+          const { quota, usage } = await navigator.storage.estimate();
+          const available = (quota ?? 0) - (usage ?? 0);
+          if (fileInfo.size > available) {
+            toast.error("Not enough disk space available for this download!");
+            setDownloadingIndex(null);
+            return;
+          }
+        } catch (err) {
+          // Ignore estimation errors
+        }
+      }
+
+      requestWakeLock();
       setDownloadingIndex(index);
 
       const win = window as WindowWithFilePicker;
@@ -681,6 +731,7 @@ export function usePeerLink({ role, code: initialCode }: UsePeerLinkProps) {
 
   const disconnect = useCallback(() => {
     stopSpeedTicker();
+    releaseWakeLock();
     wsRef.current?.close();
     dcRef.current?.close();
     pcRef.current?.close();
