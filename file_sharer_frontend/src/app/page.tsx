@@ -164,7 +164,7 @@ export default function Home() {
     s.toLowerCase().includes('fail');
 
   return (
-    <div className="min-h-screen bg-[#eef2ff] font-sans">
+    <div id="transfer" className="min-h-screen bg-[#eef2ff] font-sans">
 
       {/* ── Hero ────────────────────────────────────────────────────────────── */}
       <div className="relative overflow-hidden bg-gradient-to-b from-[#1e3a8a] via-[#1d4ed8] to-[#eef2ff] pt-16 pb-72 px-4 text-center">
