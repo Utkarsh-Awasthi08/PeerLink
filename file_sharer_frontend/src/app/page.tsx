@@ -6,7 +6,7 @@ import FileDownload from '@/components/FileDownload';
 import InviteCode from '@/components/InviteCode';
 import { usePeerLink } from '@/hooks/usePeerLink';
 import toast from 'react-hot-toast';
-import { FiPause, FiPlay, FiShield, FiX, FiShare2, FiFile, FiCheck, FiPlusCircle, FiClock } from 'react-icons/fi';
+import { FiPause, FiPlay, FiShield, FiX, FiShare2, FiFile, FiCheck, FiPlusCircle, FiClock, FiCloud, FiMaximize, FiLock } from 'react-icons/fi';
 
 /** Format bytes into a human-readable string */
 function formatBytes(bytes: number): string {
@@ -130,8 +130,8 @@ export default function Home() {
   const isSendingDone = sender.status.includes('sent successfully');
 
   return (
-    <div className="min-h-screen flex items-center justify-center bg-gradient-to-br from-blue-50 via-indigo-50 to-purple-50 p-4 sm:p-6 md:p-8">
-      <div className="w-full max-w-2xl">
+    <div className="min-h-screen flex flex-col items-center bg-gradient-to-br from-blue-50 via-indigo-50 to-purple-50 px-4 sm:px-6 md:px-8 pt-10 sm:pt-20 pb-32">
+      <div className="w-full max-w-2xl shrink-0">
         {/* Card */}
         <div className="bg-white rounded-3xl shadow-2xl border border-gray-100 overflow-hidden transition-all">
 
@@ -365,6 +365,51 @@ export default function Home() {
             </div>
           </div>
         </div>
+      </div>
+
+      {/* ── Feature / Marketing Section ── */}
+      <div className="w-full max-w-4xl mt-32 space-y-20 sm:space-y-28 px-4 sm:px-0">
+        
+        {/* Feature 1 */}
+        <div className="flex flex-col sm:flex-row items-center gap-6 sm:gap-12 text-center sm:text-left">
+          <div className="w-24 h-24 sm:w-32 sm:h-32 flex-shrink-0 bg-gradient-to-br from-blue-500 to-indigo-600 rounded-full flex items-center justify-center text-white shadow-xl">
+            <FiCloud className="w-10 h-10 sm:w-14 sm:h-14" />
+          </div>
+          <div>
+            <h2 className="text-2xl sm:text-3xl font-black text-gray-800 mb-4 tracking-tight">Files are shared straight from your device</h2>
+            <p className="text-gray-600 text-base sm:text-lg leading-relaxed font-medium">
+              When you close the browser tab your files are no longer accessible, minimising the risk of anyone getting unwanted access. 
+              PeerLink uses the peer-to-peer technology WebRTC to find the shortest path, meaning sometimes your data doesn't even have to leave the building!
+            </p>
+          </div>
+        </div>
+
+        {/* Feature 2 */}
+        <div className="flex flex-col sm:flex-row-reverse items-center gap-6 sm:gap-12 text-center sm:text-left">
+          <div className="w-24 h-24 sm:w-32 sm:h-32 flex-shrink-0 bg-gradient-to-br from-indigo-500 to-purple-600 rounded-full flex items-center justify-center text-white shadow-xl">
+            <FiMaximize className="w-10 h-10 sm:w-14 sm:h-14" />
+          </div>
+          <div>
+            <h2 className="text-2xl sm:text-3xl font-black text-gray-800 mb-4 tracking-tight">No more file size limits</h2>
+            <p className="text-gray-600 text-base sm:text-lg leading-relaxed font-medium">
+              Because we don't store the data, there's no need for file size limits. Just share files of any size or whatever amount. As long as you keep an eye on your own data usage.
+            </p>
+          </div>
+        </div>
+
+        {/* Feature 3 */}
+        <div className="flex flex-col sm:flex-row items-center gap-6 sm:gap-12 text-center sm:text-left">
+          <div className="w-24 h-24 sm:w-32 sm:h-32 flex-shrink-0 bg-gradient-to-br from-purple-500 to-fuchsia-600 rounded-full flex items-center justify-center text-white shadow-xl">
+            <FiLock className="w-10 h-10 sm:w-14 sm:h-14" />
+          </div>
+          <div>
+            <h2 className="text-2xl sm:text-3xl font-black text-gray-800 mb-4 tracking-tight">Only the receiver can access your files</h2>
+            <p className="text-gray-600 text-base sm:text-lg leading-relaxed font-medium">
+              Only you and the receiver can access your files. Your data is encrypted end-to-end, and can only be read by your receiver (and you of course). PeerLink uses a modern implementation of WebRTC DTLS 1.3 encryption.
+            </p>
+          </div>
+        </div>
+        
       </div>
     </div>
   );
