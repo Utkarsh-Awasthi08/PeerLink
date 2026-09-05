@@ -39,7 +39,7 @@ By leveraging WebRTC for direct data streaming, native browser storage engines (
 PeerLink operates on an on-demand pull model:
 1. **Manifest Push & Dynamic Updates:** Upon WebRTC data channel establishment (`onopen`), the Sender sends a JSON `file_manifest`. Senders can stage new files mid-session; sending updated manifests over the open data channel without interrupting active binary chunk transfers.
 2. **File Request & Live Queueing:** When the Receiver clicks **Get** (or queues files during **Download All**), subsequent requests emit a `queue_file` control message. The Sender's UI reflects "Next requested" in real-time while the Receiver displays "In queue".
-3. **Chunk Streaming:** The Sender streams the requested file in 64 KB encrypted chunks until complete, followed by an `eof` message.
+3. **Chunk Streaming:** The Sender streams the requested file in 256 KB encrypted chunks until complete, followed by an `eof` message.
 4. **Queue Advance:** The receiver locks its state synchronously to avoid concurrent stream collisions. When an `eof` is processed, the queue engine automatically pops the next file index and issues a `request_file`.
 5. **In-Flight Cancellation:** Either peer can abort an active transfer via a `{ type: 'cancel', index }` control signal. The sender halts its chunk iteration, the receiver discards partial buffers, and the queue automatically transitions to the next item.
 
@@ -58,7 +58,7 @@ Traditional browser file downloads accumulate chunks in JavaScript memory (`Blob
 *   **Tier 3: In-Memory Fallback**
     *   For legacy environments lacking OPFS, transfers gracefully fall back to in-memory buffering.
 
-### 3. Backpressure Management & 64 KB Slicing
+### 3. Backpressure Management & 256 KB Slicing
 *   **Direct Slicing:** The sender slices chunks from the local `File` object using `file.slice()` without loading entire files into memory.
 *   **Flow Control:** To prevent network buffer overflow, the sender monitors `RTCDataChannel.bufferedAmount`. If it exceeds a 1 MB high-water threshold, transmission pauses until the `onbufferedamountlow` event fires.
 
@@ -94,7 +94,7 @@ sequenceDiagram
     Note over S,C: 3. Selective Streaming (Disk / OPFS)
     C->>C: Reserves space (Save As... dialog or OPFS sandbox)
     C->>S: Sends request_file (Index 0: File A)
-    loop 64KB Encrypted Chunks
+    loop 256KB Encrypted Chunks
         S->>C: Binary Chunk via WebRTC DataChannel (DTLS Encrypted)
         C->>C: Write to Disk / OPFS Stream
     end
