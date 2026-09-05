@@ -70,6 +70,15 @@ export default function FileDownload({ onDownload, isDownloading }: FileDownload
           )}
         </button>
       </form>
+      <div className="mt-4 text-left bg-orange-50 border border-orange-200 p-3 rounded-xl text-xs text-orange-800 w-full">
+        <p className="font-bold flex items-center gap-1 mb-1">🦁 Using Brave Browser?</p>
+        <p className="mb-1">Brave blocks local connections by default for both sender and receiver. To fix:</p>
+        <ol className="list-decimal list-inside space-y-0.5 text-[11px]">
+          <li>Go to <code className="bg-orange-100 px-1 rounded">brave://settings/privacy</code></li>
+          <li>Find <strong>WebRTC IP Handling Policy</strong></li>
+          <li>Set to <strong>Default public and private interfaces</strong></li>
+        </ol>
+      </div>
     </div>
   );
 }
