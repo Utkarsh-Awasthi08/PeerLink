@@ -2,6 +2,7 @@
 
 import { useState } from 'react';
 import Link from 'next/link';
+import Image from 'next/image';
 import { FiChevronDown, FiArrowRight } from 'react-icons/fi';
 
 const FAQS = [
@@ -60,6 +61,8 @@ function FAQItem({ q, a, index }: { q: string; a: string; index: number }) {
     });
   };
 
+  const showDiagram = index === 0;
+
   return (
     <div className="border border-blue-100 rounded-2xl overflow-hidden bg-white shadow-sm hover:shadow-md transition-shadow duration-200">
       <button
@@ -75,10 +78,21 @@ function FAQItem({ q, a, index }: { q: string; a: string; index: number }) {
       </button>
 
       <div
-        className={`overflow-hidden transition-all duration-300 ease-in-out ${open ? 'max-h-[600px]' : 'max-h-0'}`}
+        className={`overflow-hidden transition-all duration-300 ease-in-out ${open ? 'max-h-[900px]' : 'max-h-0'}`}
       >
         <div className="px-6 pb-6 pt-0 text-sm text-gray-600 leading-relaxed border-t border-blue-50 space-y-0">
           <div className="pt-4">{renderAnswer(a)}</div>
+          {showDiagram && (
+            <div className="mt-5">
+              <Image
+                src="/images/Gemini_Generated_Image_wslbmkwslbmkwslb.webp"
+                alt="Diagram showing third-party cloud upload/download path vs PeerLink direct peer-to-peer connection"
+                width={900}
+                height={506}
+                className="w-full h-auto rounded-xl border border-blue-100"
+              />
+            </div>
+          )}
         </div>
       </div>
     </div>

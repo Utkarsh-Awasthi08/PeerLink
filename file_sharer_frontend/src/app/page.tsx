@@ -1,6 +1,7 @@
 'use client';
 
 import { useState, useEffect, useRef } from 'react';
+import Image from 'next/image';
 import FileUpload from '@/components/FileUpload';
 import FileDownload from '@/components/FileDownload';
 import InviteCode from '@/components/InviteCode';
@@ -336,6 +337,32 @@ export default function Home() {
             <p className="text-xs text-blue-600/70 font-normal">
               💡 <strong>Pro Tip:</strong> For maximum speeds, connect both devices to the same Wi-Fi / LAN.
             </p>
+          </div>
+        </div>
+      </div>
+
+
+      {/* ── P2P Diagram ──────────────────────────────────────────────────── */}
+      <div className="mx-auto max-w-3xl px-4 sm:px-6 pt-14 pb-2">
+        <div className="bg-white rounded-3xl shadow-md border border-blue-100 overflow-hidden">
+          <div className="px-6 pt-8 pb-2 text-center">
+            <p className="text-blue-500 font-semibold text-xs tracking-widest uppercase mb-2">How it works</p>
+            <h2 className="text-xl sm:text-2xl font-black text-gray-900 tracking-tight">
+              Direct transfer — no middleman
+            </h2>
+            <p className="mt-2 text-gray-500 text-sm max-w-md mx-auto leading-relaxed">
+              Unlike cloud services, PeerLink connects your devices directly. Your files never leave your network path.
+            </p>
+          </div>
+          <div className="px-4 pb-6 pt-4">
+            <Image
+              src="/images/Gemini_Generated_Image_wslbmkwslbmkwslb.webp"
+              alt="Diagram comparing third-party cloud file transfer (upload to server, then download) versus PeerLink's direct peer-to-peer transfer with unlimited speed and size"
+              width={900}
+              height={506}
+              className="w-full h-auto rounded-2xl"
+              priority
+            />
           </div>
         </div>
       </div>

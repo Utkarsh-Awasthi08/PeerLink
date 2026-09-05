@@ -1,5 +1,6 @@
 import type { Metadata } from 'next';
 import Link from 'next/link';
+import Image from 'next/image';
 import {
   FiShield, FiEyeOff, FiServer, FiLock, FiTrash2,
   FiArrowRight, FiAlertCircle,
@@ -7,7 +8,7 @@ import {
 
 export const metadata: Metadata = {
   title: 'Privacy Policy — PeerLink',
-  description: 'PeerLink\'s privacy commitment: we cannot see your files, we do not store them, and the architecture is designed so that no one can.',
+  description: "PeerLink's privacy commitment: we cannot see your files, we do not store them, and the architecture is designed so that no one can.",
 };
 
 const SECTIONS = [
@@ -37,7 +38,7 @@ const SECTIONS = [
       'WebRTC mandates encryption at the protocol level — it is not optional and cannot be disabled. Every PeerLink transfer is protected by DTLS 1.3 (Datagram Transport Layer Security), the same family of cryptography as HTTPS. DTLS 1.3 provides:',
     ],
     bullets: [
-      'Forward secrecy — a new ephemeral key pair is negotiated for every session. Compromising one session\'s key reveals nothing about past or future sessions.',
+      "Forward secrecy — a new ephemeral key pair is negotiated for every session. Compromising one session's key reveals nothing about past or future sessions.",
       'Mutual authentication — both browsers verify each other\'s fingerprints before any data flows, preventing man-in-the-middle interception.',
       'Integrity protection — every packet is authenticated with HMAC. If a packet is tampered with in transit, it is rejected.',
       'Confidentiality — payload bytes are AES-GCM encrypted. Anyone intercepting traffic on the wire sees only ciphertext.',
@@ -49,7 +50,7 @@ const SECTIONS = [
     gradient: 'from-violet-500 to-indigo-600',
     title: 'The signaling server — what it touches and when',
     paragraphs: [
-      'PeerLink\'s backend is a Spring Boot WebSocket application deployed on Render. Its sole function is the WebRTC signaling handshake:',
+      "PeerLink's backend is a Spring Boot WebSocket application deployed on Render. Its sole function is the WebRTC signaling handshake:",
     ],
     steps: [
       { step: '1', text: 'Sender opens a WebSocket and sends an SDP offer tagged with their room code.' },
@@ -73,7 +74,7 @@ const SECTIONS = [
     gradient: 'from-amber-500 to-orange-500',
     title: 'STUN servers and your IP address',
     paragraphs: [
-      'To discover the best network path between two peers, WebRTC contacts STUN (Session Traversal Utilities for NAT) servers. PeerLink uses Google\'s public STUN servers (stun.l.google.com:19302). Your public IP address is shared with the STUN server during this lookup — this is a fundamental property of how NAT traversal works on the internet, not unique to PeerLink.',
+      "To discover the best network path between two peers, WebRTC contacts STUN (Session Traversal Utilities for NAT) servers. PeerLink uses Google's public STUN servers (stun.l.google.com:19302). Your public IP address is shared with the STUN server during this lookup — this is a fundamental property of how NAT traversal works on the internet, not unique to PeerLink.",
       'The result of the STUN lookup (your reflexive IP and port) is included in the ICE candidates sent through the signaling server. This means the receiving peer learns your public IP address as part of establishing the connection — equivalent to what happens in any WebRTC video call or online multiplayer game. If you require anonymity, consider using a VPN before initiating a transfer.',
     ],
   },
@@ -111,17 +112,48 @@ export default function PrivacyPage() {
             <div>
               <h2 className="text-lg font-black text-gray-900 mb-2">TL;DR — The three-sentence version</h2>
               <ul className="space-y-1.5 text-sm text-gray-700 leading-relaxed">
-                <li className="flex items-start gap-2"><span className="text-emerald-500 font-bold mt-0.5">✓</span><span>Your files travel directly between browsers over an encrypted WebRTC channel — they never pass through our servers.</span></li>
-                <li className="flex items-start gap-2"><span className="text-emerald-500 font-bold mt-0.5">✓</span><span>We do not store files, file names, or any transfer metadata. The only thing our server ever sees is the room code used to pair two browsers.</span></li>
-                <li className="flex items-start gap-2"><span className="text-emerald-500 font-bold mt-0.5">✓</span><span>All traffic is protected by DTLS 1.3 encryption — even if someone intercepted every packet, they could not read your files.</span></li>
+                <li className="flex items-start gap-2">
+                  <span className="text-emerald-500 font-bold mt-0.5">✓</span>
+                  <span>Your files travel directly between browsers over an encrypted WebRTC channel — they never pass through our servers.</span>
+                </li>
+                <li className="flex items-start gap-2">
+                  <span className="text-emerald-500 font-bold mt-0.5">✓</span>
+                  <span>We do not store files, file names, or any transfer metadata. The only thing our server ever sees is the room code used to pair two browsers.</span>
+                </li>
+                <li className="flex items-start gap-2">
+                  <span className="text-emerald-500 font-bold mt-0.5">✓</span>
+                  <span>All traffic is protected by DTLS 1.3 encryption — even if someone intercepted every packet, they could not read your files.</span>
+                </li>
               </ul>
             </div>
           </div>
         </div>
       </div>
 
+      {/* ── P2P Diagram ────────────────────────────────────────────────────── */}
+      <div className="mx-auto max-w-3xl px-4 sm:px-6 pt-8">
+        <div className="bg-white rounded-2xl border border-blue-100 shadow-sm overflow-hidden">
+          <div className="px-6 pt-6 pb-2 text-center">
+            <p className="text-blue-500 font-semibold text-xs tracking-widest uppercase mb-1">Architecture</p>
+            <h2 className="text-lg font-black text-gray-900">See the difference at a glance</h2>
+            <p className="text-gray-500 text-sm mt-1">
+              Cloud services route your files through their servers. PeerLink doesn&apos;t.
+            </p>
+          </div>
+          <div className="px-4 pb-5 pt-3">
+            <Image
+              src="/images/Gemini_Generated_Image_wslbmkwslbmkwslb.webp"
+              alt="Comparison diagram: third-party cloud services upload then download your files through their servers, while PeerLink transfers directly between browsers with no server involvement"
+              width={900}
+              height={506}
+              className="w-full h-auto rounded-xl border border-blue-50"
+            />
+          </div>
+        </div>
+      </div>
+
       {/* ── Sections ───────────────────────────────────────────────────────── */}
-      <div className="mx-auto max-w-3xl px-4 sm:px-6 pt-12 pb-24 space-y-8">
+      <div className="mx-auto max-w-3xl px-4 sm:px-6 pt-8 pb-24 space-y-6">
         {SECTIONS.map((section, i) => {
           const Icon = section.icon;
           return (
