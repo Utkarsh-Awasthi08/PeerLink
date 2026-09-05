@@ -167,7 +167,7 @@ export default function Home() {
     <div className="min-h-screen bg-[#eef2ff] font-sans">
 
       {/* ── Hero ────────────────────────────────────────────────────────────── */}
-      <div className="relative overflow-hidden bg-gradient-to-br from-[#1e3a8a] via-[#1d4ed8] to-[#2563eb] pt-16 pb-44 px-4 text-center">
+      <div className="relative overflow-hidden bg-gradient-to-b from-[#1e3a8a] via-[#1d4ed8] to-[#eef2ff] pt-16 pb-72 px-4 text-center">
         <div className="pointer-events-none absolute -top-20 -left-20 w-96 h-96 rounded-full bg-white/5 blur-3xl" />
         <div className="pointer-events-none absolute bottom-0 right-0 w-80 h-80 rounded-full bg-sky-300/10 blur-3xl" />
         <p className="text-blue-200 text-xs font-semibold tracking-widest uppercase mb-3">
@@ -189,7 +189,7 @@ export default function Home() {
       </div>
 
       {/* ── App Card ────────────────────────────────────────────────────────── */}
-      <div className="relative z-10 -mt-32 mx-auto w-full max-w-xl px-4">
+      <div className="relative z-10 -mt-52 mx-auto w-full max-w-xl px-4">
         <div className="bg-white rounded-3xl shadow-2xl border border-blue-100/80 overflow-hidden">
 
           <div className="flex border-b border-gray-100">
