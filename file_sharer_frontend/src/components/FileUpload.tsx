@@ -71,8 +71,14 @@ export default function FileUpload({ onFilesSelected, disabled = false }: FileUp
               <FiFolder className="w-4 h-4 text-blue-500" />
               Select Folder
             </button>
-            <div className="inline-flex items-center gap-1.5 px-3 py-1 mt-2 bg-amber-50 border border-amber-200/80 rounded-full text-xs font-medium text-amber-800">
-              <span>💡 Sending to mobile? Keep under 6GB for best stability</span>
+            <div className="mt-4 text-left bg-orange-50 border border-orange-200 p-3 rounded-xl text-xs text-orange-800 w-full max-w-md">
+              <p className="font-bold flex items-center gap-1 mb-1">🦁 Using Brave Browser?</p>
+              <p className="mb-1">Brave blocks local connections by default. To fix:</p>
+              <ol className="list-decimal list-inside space-y-0.5 text-[11px]">
+                <li>Go to <code className="bg-orange-100 px-1 rounded">brave://settings/privacy</code></li>
+                <li>Find <strong>WebRTC IP Handling Policy</strong></li>
+                <li>Set to <strong>Default public and private interfaces</strong></li>
+              </ol>
             </div>
           </>
         )}
