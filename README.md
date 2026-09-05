@@ -14,12 +14,14 @@ By leveraging WebRTC for direct data streaming, native browser storage engines (
 
 ## 🚀 Key Features
 
-*   **Multi-File Batch Sharing & Dynamic Staging:** Drag and drop multiple files at once to generate a room. With **Dynamic File Adding**, senders can seamlessly click **"+ Add More Files"** during an active session to add new files on the fly without reconnecting.
+*   **Multi-File & Native Folder Sharing:** Drag and drop files, or click **"Select Folder"** to recursively queue an entire directory structure natively. With **Dynamic File Adding**, senders can seamlessly click **"+ Add More Files"** during an active session to add new items on the fly without reconnecting.
 *   **On-Demand "Pull" Architecture (Selective Downloads):** Unlike traditional push systems, the receiver sees the complete file manifest (names & sizes) and selectively chooses which files to download or can choose **"Download All"** to download the entire queue sequentially.
 *   **Smart Transfer Queue & Cross-Browser Synchronization:**
     *   Clicking **"Get"** on multiple files or clicking **"Download All"** queues files sequentially.
     *   **Live Queue Syncing:** The receiver sees an amber **"🕒 In queue"** badge, while the sender's screen synchronizes in real-time displaying **"🕒 Next requested"** for queued files over WebRTC data channels.
     *   As soon as an active transfer completes, the next queued file starts automatically.
+*   **Ultra-Fast LAN Optimization:** Tuned explicitly for gigabit local-network transfer speeds. Utilizes massive **256 KB chunk slicing** and a heavy **8 MB backpressure watermark** to maximize bandwidth saturation with minimal JavaScript CPU overhead.
+*   **Resilient Error Recovery & Navigation:** The app aggressively listens to WebRTC ICE disconnects. If the sender drops out, or an invalid room code is provided, the receiver is gracefully halted, presented with the error, and automatically redirected back to the home lobby.
 *   **In-Flight Transfer Cancellation:** Either the sender or receiver can abort an active file transfer at any time with a single click. The transfer cleanly halts, discards partial disk/RAM buffers, and allows remaining queued files to proceed without dropping the WebRTC peer connection.
 *   **Stream-to-Disk via File System Access API (Desktop):** Supports streaming incoming WebRTC chunks directly to the recipient's hard drive in real time via `showSaveFilePicker`. Browser RAM usage stays flat at ~0 MB, eliminating browser crashes even when transferring multi-gigabyte or 100+ GB files.
 *   **OPFS (Origin Private File System) Fallback (Mobile & Safari):** For browsers that do not support the File System Access API (iOS Safari, Android Chrome, Brave Shields), PeerLink streams chunks directly into the browser's hidden, sandboxed OPFS drive. Once complete, the file is seamlessly extracted to the user's Downloads folder without RAM crashes.
