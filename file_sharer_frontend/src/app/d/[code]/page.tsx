@@ -273,9 +273,14 @@ export default function DownloadPage() {
         )}
 
         {/* Security notice */}
-        <div className="mt-8 pt-4 border-t border-gray-100 flex items-center justify-center gap-2 text-sm text-gray-600 font-medium">
-          <FiShield className="w-4 h-4 text-emerald-600 flex-shrink-0" />
-          <span>Files transfer directly between browsers — server never sees your data.</span>
+        <div className="mt-8 pt-4 border-t border-gray-100 flex flex-col items-center justify-center gap-1.5 text-sm text-gray-600 font-medium text-center">
+          <div className="flex items-center justify-center gap-2">
+            <FiShield className="w-4 h-4 text-emerald-600 flex-shrink-0" />
+            <span>Files transfer directly between browsers — server never sees your data.</span>
+          </div>
+          <div className="text-xs text-gray-500 font-normal">
+            💡 <strong>Pro Tip:</strong> For maximum gigabit transfer speeds, ensure both devices are connected to the same Wi-Fi / Local Network.
+          </div>
         </div>
       </div>
     </div>

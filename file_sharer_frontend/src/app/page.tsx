@@ -355,9 +355,14 @@ export default function Home() {
           </div>
 
           {/* Footer */}
-          <div className="px-6 py-4 bg-gray-50/80 border-t border-gray-100 flex items-center justify-center gap-2 text-sm text-gray-600 font-medium">
-            <FiShield className="w-4 h-4 text-emerald-600 flex-shrink-0" />
-            <span>End-to-end encrypted · Files never touch our servers</span>
+          <div className="px-6 py-4 bg-gray-50/80 border-t border-gray-100 flex flex-col items-center justify-center gap-1.5 text-sm text-gray-600 font-medium text-center">
+            <div className="flex items-center justify-center gap-2">
+              <FiShield className="w-4 h-4 text-emerald-600 flex-shrink-0" />
+              <span>End-to-end encrypted · Files never touch our servers</span>
+            </div>
+            <div className="text-xs text-gray-500 font-normal">
+              💡 <strong>Pro Tip:</strong> For maximum gigabit transfer speeds, ensure both devices are connected to the same Wi-Fi / Local Network.
+            </div>
           </div>
         </div>
       </div>
