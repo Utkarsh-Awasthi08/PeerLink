@@ -51,10 +51,12 @@ export default function DownloadPage() {
 
   // Redirect to home if connection fails
   useEffect(() => {
+    const s = status.toLowerCase();
     if (
-      status.includes('No peer found') ||
-      status.includes('Disconnected') ||
-      status.includes('error')
+      s.includes('no peer found') ||
+      s.includes('disconnect') ||
+      s.includes('error') ||
+      s.includes('fail')
     ) {
       toast.error(status);
       router.push('/?error=' + encodeURIComponent(status) + '&tab=download');
