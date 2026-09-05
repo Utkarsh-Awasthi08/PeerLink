@@ -13,7 +13,10 @@ function formatBytes(bytes: number): string {
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }
 
+import { useRouter } from 'next/navigation';
+
 export default function DownloadPage() {
+  const router = useRouter();
   const [code, setCode] = useState<string>('');
 
   // Track all files that have been fully downloaded by index
@@ -45,6 +48,18 @@ export default function DownloadPage() {
       disconnect();
     };
   }, [connect, disconnect]);
+
+  // Redirect to home if connection fails
+  useEffect(() => {
+    if (
+      status.includes('No peer found') ||
+      status.includes('Disconnected') ||
+      status.includes('error')
+    ) {
+      toast.error(status);
+      router.push('/?error=' + encodeURIComponent(status) + '&tab=download');
+    }
+  }, [status, router]);
 
   // Handle newly downloaded file
   useEffect(() => {

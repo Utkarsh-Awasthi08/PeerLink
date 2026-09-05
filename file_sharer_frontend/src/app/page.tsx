@@ -30,6 +30,23 @@ export default function Home() {
   const receiver = usePeerLink({ role: 'receiver' });
 
   useEffect(() => {
+    // Check for error messages or tab selection passed via URL (e.g. from receiver redirect)
+    if (typeof window !== 'undefined') {
+      const searchParams = new URLSearchParams(window.location.search);
+      const errorMsg = searchParams.get('error');
+      const tab = searchParams.get('tab');
+      
+      if (errorMsg) {
+        toast.error(decodeURIComponent(errorMsg), { duration: 4000 });
+        // Clean up the URL without refreshing the page
+        window.history.replaceState({}, '', window.location.pathname);
+      }
+      
+      if (tab === 'download') {
+        setActiveTab('download');
+      }
+    }
+
     return () => {
       sender.disconnect();
       receiver.disconnect();
