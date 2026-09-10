@@ -56,6 +56,9 @@ export function usePeerLink({ role, code: initialCode }: UsePeerLinkProps) {
   const [speedBytesPerSec, setSpeedBytesPerSec] = useState<number>(0);
   const [etaSeconds, setEtaSeconds] = useState<number | null>(null);
 
+  // True once the data channel is open; only goes false on a real (non-recovered) disconnect
+  const [isPeerConnected, setIsPeerConnected] = useState(false);
+
   // Pull / On-Demand specific state
   const [manifest, setManifest] = useState<FileManifestItem[]>([]);
   const manifestRef = useRef<FileManifestItem[]>([]);
@@ -72,6 +75,7 @@ export function usePeerLink({ role, code: initialCode }: UsePeerLinkProps) {
   const wsRef = useRef<WebSocket | null>(null);
   const pcRef = useRef<RTCPeerConnection | null>(null);
   const dcRef = useRef<RTCDataChannel | null>(null);
+  const disconnectGraceTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // Transfer control
   const pausedRef = useRef(false);
@@ -136,6 +140,17 @@ export function usePeerLink({ role, code: initialCode }: UsePeerLinkProps) {
     worker.onerror = finish;
     worker.postMessage({ type: 'abort' });
     setTimeout(finish, 2000);
+  }, []);
+
+  const removeOpfsFile = useCallback(async (name: string) => {
+    if (typeof navigator !== 'undefined' && navigator.storage && navigator.storage.getDirectory) {
+      try {
+        const root = await navigator.storage.getDirectory();
+        await root.removeEntry(name);
+      } catch {
+        // Ignore — nothing to remove, or already gone
+      }
+    }
   }, []);
 
   const wsUrl = process.env.NEXT_PUBLIC_WS_URL || 'ws://localhost:8080/signaling';
@@ -217,12 +232,52 @@ export function usePeerLink({ role, code: initialCode }: UsePeerLinkProps) {
     };
 
     pc.onconnectionstatechange = () => {
+      // Ignore events from a superseded connection (e.g. a delayed 'closed'
+      // firing after disconnect() already tore this one down to start a new
+      // session) — otherwise it can stomp the new, actually-connected session's
+      // isPeerConnected/status right after it's established.
+      if (pcRef.current !== pc) return;
       const state = pc.connectionState;
-      if (state === 'disconnected' || state === 'failed' || state === 'closed') {
-        setStatus('Peer disconnected. Connection lost.');
-      } else {
-        setStatus(`Connection: ${state}`);
+
+      if (state === 'connected') {
+        // Covers both the initial connect and recovering from a 'disconnected' blip.
+        if (disconnectGraceTimerRef.current) {
+          clearTimeout(disconnectGraceTimerRef.current);
+          disconnectGraceTimerRef.current = null;
+        }
+        setIsPeerConnected(true);
+        setStatus(prev => (prev === 'Peer disconnected. Connection lost.' ? 'Peer connected! Ready for transfer.' : prev));
+        return;
       }
+
+      if (state === 'disconnected') {
+        // WebRTC's "disconnected" state is frequently a transient blip (Wi-Fi
+        // roaming, a brief packet-loss spike) that self-heals back to
+        // 'connected' within seconds — it is NOT the same as 'failed'. Give it
+        // a grace period before treating the peer as actually gone, so we don't
+        // flash a scary error (and hide transfer controls) for a hiccup that
+        // resolves on its own.
+        if (!disconnectGraceTimerRef.current) {
+          disconnectGraceTimerRef.current = setTimeout(() => {
+            disconnectGraceTimerRef.current = null;
+            if (pcRef.current?.connectionState === 'disconnected') {
+              setIsPeerConnected(false);
+              setStatus('Peer disconnected. Connection lost.');
+            }
+          }, 6000);
+        }
+        return;
+      }
+
+      if (state === 'failed' || state === 'closed') {
+        if (disconnectGraceTimerRef.current) {
+          clearTimeout(disconnectGraceTimerRef.current);
+          disconnectGraceTimerRef.current = null;
+        }
+        setIsPeerConnected(false);
+        setStatus('Peer disconnected. Connection lost.');
+      }
+      // 'connecting' / 'new': no status change — avoids clobbering more specific in-progress text
     };
 
     return pc;
@@ -277,6 +332,12 @@ export function usePeerLink({ role, code: initialCode }: UsePeerLinkProps) {
     if (!file) return;
 
     cancelledRef.current = false;          // reset cancellation flag for this transfer
+    // A stale pause from an earlier (cancelled/disconnected) session must never
+    // carry over — otherwise this transfer would silently block forever inside
+    // waitIfPaused() with no visible way to resume (pause/cancel UI is hidden
+    // until progress > 0, which never happens while stuck here).
+    pausedRef.current = false;
+    setIsPaused(false);
     currentlyStreamingRef.current = index;
     setIsStreaming(true);
     setStatus(`Sending: ${file.name}...`);
@@ -369,7 +430,8 @@ export function usePeerLink({ role, code: initialCode }: UsePeerLinkProps) {
     
     dc.onopen = () => {
       setStatus('Peer connected! Ready for transfer.');
-      
+      setIsPeerConnected(true);
+
       // If Sender opens DC, automatically push the manifest
       if (role === 'sender' && stagedFilesRef.current.length > 0) {
         const manifestPayload = stagedFilesRef.current.map((f, i) => ({
@@ -468,15 +530,22 @@ export function usePeerLink({ role, code: initialCode }: UsePeerLinkProps) {
               try { await fileStreamRef.current.close(); } catch { /* ignore */ }
               fileStreamRef.current = null;
             }
+            let hadOpfsFile = false;
             if (opfsWritableRef.current) {
               try { await opfsWritableRef.current.close(); } catch { /* ignore */ }
               opfsWritableRef.current = null;
               opfsFileHandleRef.current = null;
+              hadOpfsFile = true;
             }
             if (opfsWorkerRef.current) {
               terminateOpfsWorker();
               opfsFileHandleRef.current = null;
+              hadOpfsFile = true;
             }
+            // Delete the partial OPFS entry rather than leaving it orphaned —
+            // an un-cleaned partial file with the same name can otherwise block
+            // (or get silently reused by) a later attempt to download it again.
+            if (hadOpfsFile) removeOpfsFile(incomingFilenameRef.current);
             setDownloadingIndex(null);
             setProgress(0);
             setStatus('Transfer cancelled by sender.');
@@ -524,7 +593,7 @@ export function usePeerLink({ role, code: initialCode }: UsePeerLinkProps) {
         }
       }
     };
-  }, [role, streamFile, startSpeedTicker, stopSpeedTicker, terminateOpfsWorker]);
+  }, [role, streamFile, startSpeedTicker, stopSpeedTicker, releaseWakeLock, terminateOpfsWorker, removeOpfsFile]);
 
   // ── WebRTC negotiation ───────────────────────────────────────────────────────
 
@@ -557,6 +626,7 @@ export function usePeerLink({ role, code: initialCode }: UsePeerLinkProps) {
   const connect = useCallback(async (sessionCode: string) => {
     setCode(sessionCode);
     setStatus('Connecting to signaling server...');
+    setIsPeerConnected(false);
 
     const ws = new WebSocket(wsUrl);
     wsRef.current = ws;
@@ -678,6 +748,8 @@ export function usePeerLink({ role, code: initialCode }: UsePeerLinkProps) {
     if (role === 'sender') {
       // Signal the streaming loop to stop
       cancelledRef.current = true;
+      pausedRef.current = false;
+      setIsPaused(false);
       // Unblock if currently paused so the cancel flag is checked immediately
       if (resumeResolverRef.current) {
         resumeResolverRef.current();
@@ -687,27 +759,34 @@ export function usePeerLink({ role, code: initialCode }: UsePeerLinkProps) {
     } else {
       // Receiver side: discard partial data and notify sender
       stopSpeedTicker();
+      setIsPaused(false);
       receiveBufferRef.current = [];
       receivedSizeRef.current = 0;
       if (fileStreamRef.current) {
         fileStreamRef.current.close().catch(() => {});
         fileStreamRef.current = null;
       }
+      let hadOpfsFile = false;
       if (opfsWritableRef.current) {
         opfsWritableRef.current.close().catch(() => {});
         opfsWritableRef.current = null;
         opfsFileHandleRef.current = null;
+        hadOpfsFile = true;
       }
       if (opfsWorkerRef.current) {
         terminateOpfsWorker();
         opfsFileHandleRef.current = null;
+        hadOpfsFile = true;
       }
+      // Delete the partial OPFS entry — otherwise it's left orphaned and can
+      // block (or get confusingly reused by) a later attempt at this same file.
+      if (hadOpfsFile) removeOpfsFile(incomingFilenameRef.current);
       setDownloadingIndex(null);
       setProgress(0);
       setStatus('Transfer cancelled.');
       dc.send(JSON.stringify({ type: 'cancel', index: incomingFileIndexRef.current }));
     }
-  }, [role, stopSpeedTicker, terminateOpfsWorker]);
+  }, [role, stopSpeedTicker, terminateOpfsWorker, removeOpfsFile]);
 
   /** Receiver requests a specific file from the sender */
   const requestFile = useCallback(async (index: number) => {
@@ -775,6 +854,26 @@ export function usePeerLink({ role, code: initialCode }: UsePeerLinkProps) {
             opfsFileHandleRef.current = handle;
             opfsWritableRef.current = null;
             fileStreamRef.current = null;
+            // The init-phase handler above only matters until 'ready'/'error' —
+            // its resolve/reject already fired, so replace it before any chunk
+            // writes start. Otherwise a write error mid-transfer posts 'error'
+            // into a dead, already-settled promise and vanishes silently,
+            // leaving the UI stuck at 0% forever with no feedback.
+            worker.onmessage = (e) => {
+              if (e.data?.type !== 'error') return;
+              console.error('OPFS worker write error:', e.data.message);
+              toast.error('Download failed — could not write to storage.');
+              terminateOpfsWorker();
+              opfsFileHandleRef.current = null;
+              stopSpeedTicker();
+              releaseWakeLock();
+              setDownloadingIndex(null);
+              setProgress(0);
+              setStatus('Download failed.');
+              if (dcRef.current?.readyState === 'open') {
+                dcRef.current.send(JSON.stringify({ type: 'cancel', index: incomingFileIndexRef.current }));
+              }
+            };
           }
         } catch (err) {
           console.warn('OPFS failed, falling back to RAM buffer', err);
@@ -793,17 +892,36 @@ export function usePeerLink({ role, code: initialCode }: UsePeerLinkProps) {
 
       dc.send(JSON.stringify({ type: 'request_file', index }));
     }
-  }, [requestWakeLock, terminateOpfsWorker]);
+  }, [requestWakeLock, terminateOpfsWorker, stopSpeedTicker, releaseWakeLock]);
 
   // ── Cleanup ──────────────────────────────────────────────────────────────────
 
   const disconnect = useCallback(() => {
     stopSpeedTicker();
     releaseWakeLock();
+    if (disconnectGraceTimerRef.current) {
+      clearTimeout(disconnectGraceTimerRef.current);
+      disconnectGraceTimerRef.current = null;
+    }
+    // Best-effort: tell the peer we're leaving *before* tearing the channel
+    // down, so it cleans up (closes/deletes any in-progress OPFS write, resets
+    // its UI) instead of being left waiting forever for chunks/eof that will
+    // never arrive — e.g. "Cancel & Start Over" used to just vanish, leaving
+    // the other side stuck showing "Receiving..."/"Sending..." at 0% forever.
+    if (dcRef.current?.readyState === 'open') {
+      try { dcRef.current.send(JSON.stringify({ type: 'cancel', index: currentlyStreamingRef.current ?? incomingFileIndexRef.current })); } catch { /* ignore */ }
+    }
+    pausedRef.current = false;
+    setIsPaused(false);
+    if (resumeResolverRef.current) {
+      resumeResolverRef.current();
+      resumeResolverRef.current = null;
+    }
     wsRef.current?.close();
     dcRef.current?.close();
     pcRef.current?.close();
     setCompletedFiles(new Set());
+    setIsPeerConnected(false);
   }, [stopSpeedTicker]);
 
   return {
@@ -812,6 +930,7 @@ export function usePeerLink({ role, code: initialCode }: UsePeerLinkProps) {
     progress,
     fileProgresses,
     queuedFiles,
+    isPeerConnected,
     completedFiles,
     isPaused,
     isStreaming,

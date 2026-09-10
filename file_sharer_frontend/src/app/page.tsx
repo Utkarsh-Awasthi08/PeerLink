@@ -303,8 +303,7 @@ export default function Home() {
                       </div>
                     )}
 
-                    {(sender.status.includes('Peer connected') || sender.status.includes('Waiting for peer') ||
-                      sender.status.includes('Sending') || sender.status.includes('sent successfully')) && (
+                    {sender.isPeerConnected && (
                       <>
                         <input ref={addMoreInputRef} type="file" multiple className="hidden" onChange={handleAddMoreFiles} />
                         <button onClick={() => addMoreInputRef.current?.click()}
