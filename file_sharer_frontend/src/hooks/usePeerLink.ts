@@ -733,10 +733,22 @@ export function usePeerLink({ role, code: initialCode }: UsePeerLinkProps) {
       }
     };
 
-    ws.onerror = () => setStatus(prev => prev.includes('No peer found') ? prev : 'WebSocket error. Please retry.');
+    ws.onerror = () => {
+      // Once the real P2P data channel is open, the signaling socket is no longer
+      // load-bearing — an error on it now doesn't mean the transfer is broken.
+      if (dcRef.current?.readyState === 'open') return;
+      setStatus(prev => prev.includes('No peer found') ? prev : 'WebSocket error. Please retry.');
+    };
     ws.onclose = (e) => {
       setStatus(prev => {
         if (prev === 'No peer found for this code.') return prev;
+        // The signaling socket only brokers the offer/answer/ICE exchange — once
+        // the actual WebRTC data channel is open, losing it is expected (the
+        // backend also proactively closes signaling sessions, e.g. its rate
+        // limiter tripping on a burst of trickled ICE candidates), not a sign the
+        // transfer died. Without this check, a signaling-only closure would read
+        // as "Disconnected" and kick the user back to the homepage mid-transfer.
+        if (dcRef.current?.readyState === 'open') return prev;
         if (e.code === 1008) return 'Disconnected: Rate limit exceeded.';
         return 'Disconnected.';
       });

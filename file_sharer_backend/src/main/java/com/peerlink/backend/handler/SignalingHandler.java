@@ -41,7 +41,8 @@ public class SignalingHandler extends TextWebSocketHandler {
     private final ScheduledExecutorService scheduler = Executors.newSingleThreadScheduledExecutor();
 
     // Rate limiter per session: session ID -> Bucket
-    // Allows 30 messages per minute, with a burst of 10 messages instantly.
+    // Sized to absorb a full WebRTC negotiation's signaling burst (join, offer/answer,
+    // and every trickled ICE candidate) without tripping — see newBucket() below.
     private final ConcurrentHashMap<String, Bucket> rateLimiters = new ConcurrentHashMap<>();
 
     private final ObjectMapper objectMapper = new ObjectMapper();
@@ -68,10 +69,18 @@ public class SignalingHandler extends TextWebSocketHandler {
         }, 1, 1, TimeUnit.MINUTES);
     }
 
-    /** Creates a rate-limit bucket: 30 tokens per minute, refilling 1 token every 2 seconds. */
+    /**
+     * Creates a rate-limit bucket. ICE candidate trickling alone can legitimately produce
+     * dozens of small messages within the first few seconds of a session — one per local
+     * interface/STUN-reflexive candidate — before the peer connection is even established;
+     * that burst is normal signaling traffic, not abuse. A too-tight limit here was closing
+     * sessions mid-negotiation with code 1008 even though the WebRTC connection went on to
+     * succeed. 100 tokens up front, refilling 100 more per minute, comfortably covers real
+     * signaling traffic while still bounding a client that just spams messages.
+     */
     private Bucket newBucket() {
         return Bucket.builder()
-                .addLimit(Bandwidth.classic(30, Refill.greedy(30, Duration.ofMinutes(1))))
+                .addLimit(Bandwidth.classic(100, Refill.greedy(100, Duration.ofMinutes(1))))
                 .build();
     }
 
