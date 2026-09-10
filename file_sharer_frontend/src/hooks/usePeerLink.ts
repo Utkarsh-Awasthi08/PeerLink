@@ -89,6 +89,10 @@ export function usePeerLink({ role, code: initialCode }: UsePeerLinkProps) {
   const cancelledRef = useRef(false);  // signals streamFile loop to abort
   const stagedFilesRef = useRef<File[]>([]);
   const currentlyStreamingRef = useRef<number | null>(null);
+  // Synchronous mirror of downloadingIndex — the actual source of truth requestFile
+  // uses to reserve a download slot. React state updates can lag behind an awaited
+  // call by several renders; this ref cannot.
+  const downloadingIndexRef = useRef<number | null>(null);
 
   // Speed tracking
   const bytesAtLastTickRef = useRef<number>(0);
@@ -512,6 +516,7 @@ export function usePeerLink({ role, code: initialCode }: UsePeerLinkProps) {
             receiveBufferRef.current = [];
           }
           
+          downloadingIndexRef.current = null;
           setDownloadingIndex(null);
           setStatus(`File received ✅`);
           setProgress(100);
@@ -552,6 +557,7 @@ export function usePeerLink({ role, code: initialCode }: UsePeerLinkProps) {
             // an un-cleaned partial file with the same name can otherwise block
             // (or get silently reused by) a later attempt to download it again.
             if (hadOpfsFile) removeOpfsFile(incomingFilenameRef.current);
+            downloadingIndexRef.current = null;
             setDownloadingIndex(null);
             setProgress(0);
             setStatus('Transfer cancelled by sender.');
@@ -567,6 +573,15 @@ export function usePeerLink({ role, code: initialCode }: UsePeerLinkProps) {
         }
         // -- Sender handling --
         else if (msg.type === 'request_file' && role === 'sender') {
+          // Defense-in-depth: with the receiver-side reservation in requestFile,
+          // two overlapping request_file messages should never happen in normal
+          // operation — but if one ever does, ignoring it (rather than clobbering
+          // currentlyStreamingRef and silently orphaning the in-flight file) keeps
+          // a stray message from wedging an active transfer.
+          if (currentlyStreamingRef.current !== null) {
+            console.warn(`Ignoring request_file for index ${msg.index}: index ${currentlyStreamingRef.current} is already streaming.`);
+            return;
+          }
           // Remove from queued set when the actual transfer begins
           setQueuedFiles(prev => {
             const next = new Set(prev);
@@ -802,6 +817,7 @@ export function usePeerLink({ role, code: initialCode }: UsePeerLinkProps) {
       // Delete the partial OPFS entry — otherwise it's left orphaned and can
       // block (or get confusingly reused by) a later attempt at this same file.
       if (hadOpfsFile) removeOpfsFile(incomingFilenameRef.current);
+      downloadingIndexRef.current = null;
       setDownloadingIndex(null);
       setProgress(0);
       setStatus('Transfer cancelled.');
@@ -811,10 +827,23 @@ export function usePeerLink({ role, code: initialCode }: UsePeerLinkProps) {
 
   /** Receiver requests a specific file from the sender */
   const requestFile = useCallback(async (index: number) => {
+    // Synchronous re-entrancy guard: rejects a second call (the queue-draining
+    // effect firing again before this call's own reservation commits, a double
+    // click on "Get", a second "Download All" click) regardless of React render
+    // timing, since this check and the reservation below run before any await.
+    if (downloadingIndexRef.current !== null) return;
     const dc = dcRef.current;
     if (dc && dc.readyState === 'open') {
       const fileInfo = manifestRef.current.find(f => f.index === index);
       if (!fileInfo) return;
+
+      // Reserve the slot synchronously, before the first await below — this lands
+      // in the same React batch as the caller's own state update (e.g. the queue
+      // effect's setDownloadQueue), closing the window where downloadingIndex
+      // would otherwise stay null across several renders while
+      // navigator.storage.estimate() (a real IPC round-trip) is still pending.
+      downloadingIndexRef.current = index;
+      setDownloadingIndex(index);
 
       if (typeof navigator !== 'undefined' && navigator.storage && navigator.storage.estimate) {
         try {
@@ -822,6 +851,7 @@ export function usePeerLink({ role, code: initialCode }: UsePeerLinkProps) {
           const available = (quota ?? 0) - (usage ?? 0);
           if (fileInfo.size > available) {
             toast.error("Not enough disk space available for this download!");
+            downloadingIndexRef.current = null;
             setDownloadingIndex(null);
             return;
           }
@@ -831,7 +861,6 @@ export function usePeerLink({ role, code: initialCode }: UsePeerLinkProps) {
       }
 
       requestWakeLock();
-      setDownloadingIndex(index);
 
       const win = window as WindowWithFilePicker;
       if (typeof win.showSaveFilePicker === 'function') {
@@ -843,6 +872,7 @@ export function usePeerLink({ role, code: initialCode }: UsePeerLinkProps) {
           fileStreamRef.current = writable;
         } catch (err) {
           console.warn('Save prompt cancelled or failed.', err);
+          downloadingIndexRef.current = null;
           setDownloadingIndex(null);
           return;
         }
@@ -888,6 +918,7 @@ export function usePeerLink({ role, code: initialCode }: UsePeerLinkProps) {
               opfsFileHandleRef.current = null;
               stopSpeedTicker();
               releaseWakeLock();
+              downloadingIndexRef.current = null;
               setDownloadingIndex(null);
               setProgress(0);
               setStatus('Download failed.');
