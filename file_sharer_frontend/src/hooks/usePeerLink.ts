@@ -462,6 +462,14 @@ export function usePeerLink({ role, code: initialCode }: UsePeerLinkProps) {
           setStatus('Ready to download.');
         } 
         else if (msg.type === 'metadata') {
+          // Defense-in-depth: only accept metadata for the file we actually
+          // reserved via requestFile. A stray/duplicate 'metadata' for a
+          // different index would otherwise silently repoint the shared
+          // receive buffers/handles mid-transfer.
+          if (downloadingIndexRef.current !== null && msg.index !== downloadingIndexRef.current) {
+            console.warn(`Ignoring metadata for unexpected index ${msg.index} (expected ${downloadingIndexRef.current}).`);
+            return;
+          }
           incomingFileIndexRef.current = msg.index;
           incomingFilenameRef.current = msg.filename;
           expectedSizeRef.current = msg.size;
@@ -476,9 +484,16 @@ export function usePeerLink({ role, code: initialCode }: UsePeerLinkProps) {
           );
         } 
         else if (msg.type === 'eof') {
+          // Defense-in-depth: ignore an eof that doesn't match the transfer we
+          // actually have in progress, rather than closing/finalizing the
+          // wrong file's shared buffer/handle.
+          if (msg.index !== incomingFileIndexRef.current) {
+            console.warn(`Ignoring eof for unexpected index ${msg.index} (expected ${incomingFileIndexRef.current}).`);
+            return;
+          }
           stopSpeedTicker();
           releaseWakeLock();
-          
+
           if (fileStreamRef.current) {
             await fileStreamRef.current.close();
             fileStreamRef.current = null;
@@ -531,9 +546,13 @@ export function usePeerLink({ role, code: initialCode }: UsePeerLinkProps) {
         }
         // cancel sent by the OTHER side
         else if (msg.type === 'cancel') {
-          stopSpeedTicker();
-          releaseWakeLock();
           if (role === 'receiver') {
+            // Ignore a stray/late cancel that doesn't refer to the transfer
+            // we're actually receiving — otherwise it could wrongly tear down
+            // a different, still-active download.
+            if (msg.index !== incomingFileIndexRef.current) return;
+            stopSpeedTicker();
+            releaseWakeLock();
             // Peer (sender) cancelled — discard any partial data we received
             receiveBufferRef.current = [];
             receivedSizeRef.current = 0;
@@ -562,6 +581,12 @@ export function usePeerLink({ role, code: initialCode }: UsePeerLinkProps) {
             setProgress(0);
             setStatus('Transfer cancelled by sender.');
           } else {
+            // Ignore a stray/late cancel that doesn't refer to the file we're
+            // actually streaming — otherwise it could wrongly abort a
+            // different, newer transfer.
+            if (msg.index !== currentlyStreamingRef.current) return;
+            stopSpeedTicker();
+            releaseWakeLock();
             // Peer (receiver) cancelled — stop our streaming loop
             cancelledRef.current = true;
             // If paused, unblock the pause-wait so the cancel check triggers immediately

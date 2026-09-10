@@ -22,6 +22,11 @@ export default function DownloadPage() {
   // Track all files that have been fully downloaded by index
   const [downloadedIndices, setDownloadedIndices] = useState<Set<number>>(new Set());
   const [downloadQueue, setDownloadQueue] = useState<number[]>([]);
+  // Briefly disables a "Get" button right after it's clicked, covering the gap
+  // between the click and downloadingIndex actually committing — without this,
+  // a second click landing in that gap looks identical to a fresh click (isBusy
+  // is still false) and would fire a second, redundant requestFile call.
+  const [pendingRequestIndex, setPendingRequestIndex] = useState<number | null>(null);
 
   const {
     status,
@@ -98,6 +103,13 @@ export default function DownloadPage() {
       requestFile(nextIndex);
     }
   }, [downloadQueue, downloadingIndex, requestFile]);
+
+  // Once downloadingIndex settles (to this file or anything else), the brief
+  // pending window a "Get" click covers is over — clear it so the button
+  // reflects real state again instead of staying stuck disabled.
+  useEffect(() => {
+    setPendingRequestIndex(null);
+  }, [downloadingIndex]);
 
   const allDownloaded = manifest.length > 0 && downloadedIndices.size === manifest.length;
 
@@ -241,10 +253,12 @@ export default function DownloadPage() {
                                   sendQueueSignal(file.index);
                                 }
                               } else {
+                                setPendingRequestIndex(file.index);
                                 requestFile(file.index);
                               }
                             }}
-                            className="flex items-center gap-1 px-3 py-1.5 rounded-lg text-xs font-bold transition-all shadow-sm bg-blue-600 text-white hover:bg-blue-700 hover:shadow active:scale-95"
+                            disabled={pendingRequestIndex === file.index}
+                            className="flex items-center gap-1 px-3 py-1.5 rounded-lg text-xs font-bold transition-all shadow-sm bg-blue-600 text-white hover:bg-blue-700 hover:shadow active:scale-95 disabled:opacity-50 disabled:pointer-events-none"
                           >
                             <FiDownload className="w-3.5 h-3.5" />
                             Get
