@@ -13,6 +13,19 @@ function formatBytes(bytes: number): string {
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }
 
+// Exact statuses that mean the connection to the peer is actually gone. Deliberately
+// an allowlist rather than a substring match on "disconnect"/"error"/"fail" — a
+// per-file problem like "Download failed." (a local OPFS write error, e.g. hitting
+// a storage quota limit) also contains "fail" but doesn't mean the WebRTC connection
+// is broken, and used to evict the whole session over it.
+const FATAL_STATUSES = new Set([
+  'No peer found for this code.',
+  'Peer disconnected. Connection lost.',
+  'Disconnected.',
+  'Disconnected: Rate limit exceeded.',
+  'WebSocket error. Please retry.',
+]);
+
 import { useRouter } from 'next/navigation';
 
 export default function DownloadPage() {
@@ -54,15 +67,9 @@ export default function DownloadPage() {
     };
   }, [connect, disconnect]);
 
-  // Redirect to home if connection fails
+  // Redirect to home if the connection is actually gone
   useEffect(() => {
-    const s = status.toLowerCase();
-    if (
-      s.includes('no peer found') ||
-      s.includes('disconnect') ||
-      s.includes('error') ||
-      s.includes('fail')
-    ) {
+    if (FATAL_STATUSES.has(status)) {
       toast.error(status);
       router.push('/?error=' + encodeURIComponent(status) + '&tab=download');
     }
