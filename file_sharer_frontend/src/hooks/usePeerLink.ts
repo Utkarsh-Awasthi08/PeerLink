@@ -681,6 +681,13 @@ export function usePeerLink({ role, code: initialCode }: UsePeerLinkProps) {
     let connectionTimeout: ReturnType<typeof setTimeout>;
 
     ws.onopen = () => {
+      // Ignore events from a superseded socket — e.g. React Strict Mode's
+      // dev-only double-invoke of this effect (mount → cleanup → mount again)
+      // closes the first WebSocket while it's still CONNECTING and immediately
+      // opens a second one; without this guard, the first socket's later events
+      // can still fire and clobber the real, healthy connection's state. Mirrors
+      // the same pcRef.current !== pc guard already used for the PeerConnection.
+      if (wsRef.current !== ws) return;
       setStatus('Connected. Waiting for peer...');
       sendSignalingMessage({ type: 'join', code: sessionCode, role });
 
@@ -696,6 +703,7 @@ export function usePeerLink({ role, code: initialCode }: UsePeerLinkProps) {
     };
 
     ws.onmessage = async (event) => {
+      if (wsRef.current !== ws) return;
       const msg = JSON.parse(event.data);
       if (msg.code !== sessionCode) return;
 
@@ -734,12 +742,14 @@ export function usePeerLink({ role, code: initialCode }: UsePeerLinkProps) {
     };
 
     ws.onerror = () => {
+      if (wsRef.current !== ws) return;
       // Once the real P2P data channel is open, the signaling socket is no longer
       // load-bearing — an error on it now doesn't mean the transfer is broken.
       if (dcRef.current?.readyState === 'open') return;
       setStatus(prev => prev.includes('No peer found') ? prev : 'WebSocket error. Please retry.');
     };
     ws.onclose = (e) => {
+      if (wsRef.current !== ws) return;
       setStatus(prev => {
         if (prev === 'No peer found for this code.') return prev;
         // The signaling socket only brokers the offer/answer/ICE exchange — once
