@@ -85,6 +85,7 @@ export default function FileUpload({ onFilesSelected, disabled = false }: FileUp
           <li>Go to <code className="bg-orange-100 px-1 rounded">brave://settings/privacy</code></li>
           <li>Find <strong>WebRTC IP Handling Policy</strong></li>
           <li>Set to <strong>Default public and private interfaces</strong></li>
+          <li>Also click the 🦁 icon in the address bar and turn <strong>Brave Shields</strong> off for this site</li>
         </ol>
       </div>
 

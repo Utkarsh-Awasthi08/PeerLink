@@ -297,7 +297,7 @@ export default function Home() {
                           {sender.isPaused ? 'Resume' : 'Pause'}
                         </button>
                         <button onClick={sender.cancelTransfer}
-                          className="py-3 px-4 rounded-xl font-bold flex justify-center items-center gap-2 bg-red-50 text-red-500 hover:bg-red-100 border border-red-200 active:scale-95">
+                          className="flex-1 py-3 px-4 rounded-xl font-bold flex justify-center items-center gap-2 transition-all shadow-sm bg-red-50 text-red-500 hover:bg-red-100 border border-red-200 active:scale-95">
                           <FiX className="w-5 h-5" /> Cancel
                         </button>
                       </div>
