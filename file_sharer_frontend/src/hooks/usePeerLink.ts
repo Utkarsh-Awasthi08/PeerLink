@@ -8,6 +8,11 @@ interface UsePeerLinkProps {
   code?: string;
 }
 
+// Single source of truth for room-code generation — also used internally to
+// retry when the server reports a collision (see the 'code_taken' handling
+// in connect() below).
+export const generateCode = () => Math.floor(10000 + Math.random() * 90000).toString();
+
 // ─── WebRTC Data Channels are E2E encrypted by default via DTLS ──────────────
 
 // ─── Types ───────────────────────────────────────────────────────────────────
@@ -76,6 +81,7 @@ export function usePeerLink({ role, code: initialCode }: UsePeerLinkProps) {
   const pcRef = useRef<RTCPeerConnection | null>(null);
   const dcRef = useRef<RTCDataChannel | null>(null);
   const disconnectGraceTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const codeRetriesRef = useRef(0); // sender: number of 'code_taken' retries for the current connect() call
 
   // Transfer control
   const pausedRef = useRef(false);
@@ -627,6 +633,7 @@ export function usePeerLink({ role, code: initialCode }: UsePeerLinkProps) {
     setCode(sessionCode);
     setStatus('Connecting to signaling server...');
     setIsPeerConnected(false);
+    codeRetriesRef.current = 0;
 
     const ws = new WebSocket(wsUrl);
     wsRef.current = ws;
@@ -653,7 +660,21 @@ export function usePeerLink({ role, code: initialCode }: UsePeerLinkProps) {
       if (msg.code !== sessionCode) return;
 
       if (role === 'sender') {
-        if (msg.type === 'join' && msg.role === 'receiver') {
+        if (msg.type === 'code_taken') {
+          // The server already has an active sender on this code (~1-in-90,000
+          // odds, but with enough concurrent users it happens) — generate a
+          // different one and retry over the same still-open WebSocket rather
+          // than silently colliding with that other session.
+          if (codeRetriesRef.current >= 5) {
+            setStatus('Could not find an available room code. Please try again.');
+            ws.close();
+            return;
+          }
+          codeRetriesRef.current += 1;
+          sessionCode = generateCode();
+          setCode(sessionCode);
+          sendSignalingMessage({ type: 'join', code: sessionCode, role });
+        } else if (msg.type === 'join' && msg.role === 'receiver') {
           setStatus('Receiver joined! Creating offer...');
           await initiateWebRTC(sessionCode);
         } else if (msg.type === 'answer') {

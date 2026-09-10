@@ -5,7 +5,7 @@ import Image from 'next/image';
 import FileUpload from '@/components/FileUpload';
 import FileDownload from '@/components/FileDownload';
 import InviteCode from '@/components/InviteCode';
-import { usePeerLink } from '@/hooks/usePeerLink';
+import { usePeerLink, generateCode } from '@/hooks/usePeerLink';
 import toast from 'react-hot-toast';
 import {
   FiPause, FiPlay, FiShield, FiX, FiShare2, FiFile, FiCheck,
@@ -19,8 +19,6 @@ function formatBytes(bytes: number): string {
   if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }
-
-const generateCode = () => Math.floor(10000 + Math.random() * 90000).toString();
 
 const FEATURES = [
   {

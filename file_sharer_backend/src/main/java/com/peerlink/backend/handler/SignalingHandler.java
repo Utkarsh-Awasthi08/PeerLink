@@ -27,6 +27,15 @@ public class SignalingHandler extends TextWebSocketHandler {
     private final ConcurrentHashMap<String, WebSocketSession> senders = new ConcurrentHashMap<>();
     private final ConcurrentHashMap<String, WebSocketSession> receivers = new ConcurrentHashMap<>();
 
+    // Room codes are claimed in Redis (not just this instance's local `senders` map) because
+    // multiple backend instances can be running behind the same Redis — a sender connected to
+    // instance A must not collide with one connected to instance B. Tracks which code (if any)
+    // each session claimed, so the claim can be released as soon as that sender disconnects
+    // rather than sitting on the TTL.
+    private static final String CODE_CLAIM_PREFIX = "peerlink:code:";
+    private static final Duration CODE_CLAIM_TTL = Duration.ofMinutes(15);
+    private final ConcurrentHashMap<WebSocketSession, String> claimedCodes = new ConcurrentHashMap<>();
+
     // Track connection times for absolute 10-minute expiry
     private final ConcurrentHashMap<WebSocketSession, Long> connectionTimes = new ConcurrentHashMap<>();
     private final ScheduledExecutorService scheduler = Executors.newSingleThreadScheduledExecutor();
@@ -89,7 +98,21 @@ public class SignalingHandler extends TextWebSocketHandler {
         if ("join".equals(sigMsg.getType())) {
             // Register session locally
             if ("sender".equals(sigMsg.getRole())) {
-                senders.put(sigMsg.getCode(), session);
+                String code = sigMsg.getCode();
+                Boolean claimed = redisTemplate.opsForValue()
+                        .setIfAbsent(CODE_CLAIM_PREFIX + code, session.getId(), CODE_CLAIM_TTL);
+                if (!Boolean.TRUE.equals(claimed)) {
+                    // Another sender already holds this room code — reject so the client
+                    // can generate a different one instead of silently hijacking that session.
+                    SignalingMessage rejection = new SignalingMessage();
+                    rejection.setType("code_taken");
+                    rejection.setCode(code);
+                    rejection.setRole("sender");
+                    session.sendMessage(new TextMessage(objectMapper.writeValueAsString(rejection)));
+                    return;
+                }
+                claimedCodes.put(session, code);
+                senders.put(code, session);
             } else if ("receiver".equals(sigMsg.getRole())) {
                 receivers.put(sigMsg.getCode(), session);
             }
@@ -110,6 +133,10 @@ public class SignalingHandler extends TextWebSocketHandler {
         receivers.values().remove(session);
         rateLimiters.remove(session.getId());
         connectionTimes.remove(session);
+        String claimedCode = claimedCodes.remove(session);
+        if (claimedCode != null) {
+            redisTemplate.delete(CODE_CLAIM_PREFIX + claimedCode);
+        }
         System.out.println("WebSocket connection closed: " + session.getId());
     }
 
