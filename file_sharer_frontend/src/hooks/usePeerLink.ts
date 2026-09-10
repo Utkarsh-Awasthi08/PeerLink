@@ -92,7 +92,8 @@ export function usePeerLink({ role, code: initialCode }: UsePeerLinkProps) {
   // OPFS
   const opfsFileHandleRef = useRef<FileSystemHandleLike | null>(null);
   const opfsWritableRef = useRef<FileSystemWritableStreamLike | null>(null);
-  
+  const opfsWorkerRef = useRef<Worker | null>(null); // Safari path: writes go through a worker (see requestFile)
+
   const receivedSizeRef = useRef<number>(0);
   const expectedSizeRef = useRef<number>(0);
   const incomingFilenameRef = useRef<string>('download');
@@ -116,6 +117,25 @@ export function usePeerLink({ role, code: initialCode }: UsePeerLinkProps) {
         wakeLockRef.current = null;
       } catch (err) {}
     }
+  }, []);
+
+  const terminateOpfsWorker = useCallback(() => {
+    const worker = opfsWorkerRef.current;
+    if (!worker) return;
+    opfsWorkerRef.current = null;
+    // Give the worker a chance to close its sync access handle before killing
+    // it — terminate()-ing immediately can leave Safari's OPFS lock on the
+    // file held indefinitely, which would hang a later attempt to reopen it.
+    let finished = false;
+    const finish = () => {
+      if (finished) return;
+      finished = true;
+      worker.terminate();
+    };
+    worker.onmessage = finish;
+    worker.onerror = finish;
+    worker.postMessage({ type: 'abort' });
+    setTimeout(finish, 2000);
   }, []);
 
   const wsUrl = process.env.NEXT_PUBLIC_WS_URL || 'ws://localhost:8080/signaling';
@@ -391,9 +411,22 @@ export function usePeerLink({ role, code: initialCode }: UsePeerLinkProps) {
             await fileStreamRef.current.close();
             fileStreamRef.current = null;
             setReceivedFile({ blob: new Blob([]), filename: incomingFilenameRef.current, index: msg.index, handledByStream: true });
-          } else if (opfsWritableRef.current && opfsFileHandleRef.current) {
-            await opfsWritableRef.current.close();
-            opfsWritableRef.current = null;
+          } else if (opfsFileHandleRef.current && (opfsWritableRef.current || opfsWorkerRef.current)) {
+            if (opfsWritableRef.current) {
+              await opfsWritableRef.current.close();
+              opfsWritableRef.current = null;
+            } else if (opfsWorkerRef.current) {
+              const worker = opfsWorkerRef.current;
+              await new Promise<void>((resolve, reject) => {
+                worker.onmessage = (e) => {
+                  if (e.data?.type === 'closed') resolve();
+                  else if (e.data?.type === 'error') reject(new Error(e.data.message));
+                };
+                worker.postMessage({ type: 'close' });
+              });
+              worker.terminate();
+              opfsWorkerRef.current = null;
+            }
             const file = await opfsFileHandleRef.current.getFile();
             const fileNameToRemove = incomingFilenameRef.current;
             const opfsCleanup = () => {
@@ -440,6 +473,10 @@ export function usePeerLink({ role, code: initialCode }: UsePeerLinkProps) {
               opfsWritableRef.current = null;
               opfsFileHandleRef.current = null;
             }
+            if (opfsWorkerRef.current) {
+              terminateOpfsWorker();
+              opfsFileHandleRef.current = null;
+            }
             setDownloadingIndex(null);
             setProgress(0);
             setStatus('Transfer cancelled by sender.');
@@ -474,6 +511,10 @@ export function usePeerLink({ role, code: initialCode }: UsePeerLinkProps) {
         if (fileStreamRef.current) {
           await fileStreamRef.current.write(chunk);
           receivedSizeRef.current += chunk.byteLength;
+        } else if (opfsWorkerRef.current) {
+          const len = chunk.byteLength;
+          opfsWorkerRef.current.postMessage({ type: 'write', chunk }, [chunk]);
+          receivedSizeRef.current += len;
         } else if (opfsWritableRef.current) {
           await opfsWritableRef.current.write(chunk);
           receivedSizeRef.current += chunk.byteLength;
@@ -483,7 +524,7 @@ export function usePeerLink({ role, code: initialCode }: UsePeerLinkProps) {
         }
       }
     };
-  }, [role, streamFile, startSpeedTicker, stopSpeedTicker]);
+  }, [role, streamFile, startSpeedTicker, stopSpeedTicker, terminateOpfsWorker]);
 
   // ── WebRTC negotiation ───────────────────────────────────────────────────────
 
@@ -657,12 +698,16 @@ export function usePeerLink({ role, code: initialCode }: UsePeerLinkProps) {
         opfsWritableRef.current = null;
         opfsFileHandleRef.current = null;
       }
+      if (opfsWorkerRef.current) {
+        terminateOpfsWorker();
+        opfsFileHandleRef.current = null;
+      }
       setDownloadingIndex(null);
       setProgress(0);
       setStatus('Transfer cancelled.');
       dc.send(JSON.stringify({ type: 'cancel', index: incomingFileIndexRef.current }));
     }
-  }, [role, stopSpeedTicker]);
+  }, [role, stopSpeedTicker, terminateOpfsWorker]);
 
   /** Receiver requests a specific file from the sender */
   const requestFile = useCallback(async (index: number) => {
@@ -705,12 +750,35 @@ export function usePeerLink({ role, code: initialCode }: UsePeerLinkProps) {
         try {
           const root = await navigator.storage.getDirectory();
           const handle = (await root.getFileHandle(fileInfo.name, { create: true })) as unknown as FileSystemHandleLike;
-          const writable = await handle.createWritable();
-          opfsFileHandleRef.current = handle;
-          opfsWritableRef.current = writable;
-          fileStreamRef.current = null;
+
+          if (typeof handle.createWritable === 'function') {
+            // Chromium: async writable stream works directly on the main thread.
+            const writable = await handle.createWritable();
+            opfsFileHandleRef.current = handle;
+            opfsWritableRef.current = writable;
+            fileStreamRef.current = null;
+          } else {
+            // Safari: no createWritable(), and createSyncAccessHandle() is only
+            // reachable from inside a worker — Safari also can't structured-clone
+            // a FileSystemFileHandle across postMessage, so the worker opens the
+            // OPFS file itself by name rather than receiving this handle.
+            const worker = new Worker('/opfs-sync-writer.worker.js');
+            await new Promise<void>((resolve, reject) => {
+              worker.onmessage = (e) => {
+                if (e.data?.type === 'ready') resolve();
+                else if (e.data?.type === 'error') reject(new Error(e.data.message));
+              };
+              worker.onerror = () => reject(new Error('OPFS worker failed to start'));
+              worker.postMessage({ type: 'init', fileName: fileInfo.name });
+            });
+            opfsWorkerRef.current = worker;
+            opfsFileHandleRef.current = handle;
+            opfsWritableRef.current = null;
+            fileStreamRef.current = null;
+          }
         } catch (err) {
           console.warn('OPFS failed, falling back to RAM buffer', err);
+          terminateOpfsWorker();
           opfsFileHandleRef.current = null;
           opfsWritableRef.current = null;
           fileStreamRef.current = null;
@@ -725,7 +793,7 @@ export function usePeerLink({ role, code: initialCode }: UsePeerLinkProps) {
 
       dc.send(JSON.stringify({ type: 'request_file', index }));
     }
-  }, []);
+  }, [requestWakeLock, terminateOpfsWorker]);
 
   // ── Cleanup ──────────────────────────────────────────────────────────────────
 
