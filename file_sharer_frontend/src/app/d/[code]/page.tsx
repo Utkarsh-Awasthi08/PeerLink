@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useEffect, useState, useRef } from 'react';
 import { usePeerLink } from '@/hooks/usePeerLink';
 import TransferStats from '@/components/TransferStats';
 import toast from 'react-hot-toast';
@@ -50,12 +50,17 @@ export default function DownloadPage() {
     receivedFile,
     manifest,
     downloadingIndex,
+    isPeerConnected,
     requestFile,
     sendQueueSignal,
     cancelTransfer,
     connect,
     disconnect,
   } = usePeerLink({ role: 'receiver' });
+
+  // Tracks whether we've already tried one automatic reconnect for the
+  // current disconnect episode — see the redirect effect below.
+  const autoRetriedRef = useRef(false);
 
   useEffect(() => {
     const pathCode = window.location.pathname.split('/').pop() || '';
@@ -67,13 +72,32 @@ export default function DownloadPage() {
     };
   }, [connect, disconnect]);
 
-  // Redirect to home if the connection is actually gone
+  // Once genuinely connected, allow a future disconnect its own fresh retry.
   useEffect(() => {
-    if (FATAL_STATUSES.has(status)) {
-      toast.error(status);
-      router.push('/?error=' + encodeURIComponent(status) + '&tab=download');
+    if (isPeerConnected) autoRetriedRef.current = false;
+  }, [isPeerConnected]);
+
+  // On a fatal status, try one automatic reconnect to the same room code
+  // before giving up — the sender's signaling session survives independently
+  // of a dead WebRTC connection (see usePeerLink's connect()/setupPeerConnection:
+  // nothing on the backend or the sender's side tears down the room just
+  // because the receiver's peer connection died), so a fresh connect() here is
+  // exactly what manually reloading this page already does successfully.
+  // Skip the retry for 'No peer found for this code.' — that specifically
+  // means the SENDER's room is gone too, so retrying can't help.
+  useEffect(() => {
+    if (!FATAL_STATUSES.has(status)) return;
+
+    if (status !== 'No peer found for this code.' && !autoRetriedRef.current) {
+      autoRetriedRef.current = true;
+      toast('Connection lost — reconnecting...', { icon: '🔄' });
+      connect(code);
+      return;
     }
-  }, [status, router]);
+
+    toast.error(status);
+    router.push('/?error=' + encodeURIComponent(status) + '&tab=download');
+  }, [status, router, code, connect]);
 
   // Handle newly downloaded file
   useEffect(() => {

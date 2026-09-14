@@ -13,6 +13,32 @@ interface UsePeerLinkProps {
 // in connect() below).
 export const generateCode = () => Math.floor(10000 + Math.random() * 90000).toString();
 
+// How long a 'disconnected' RTCPeerConnection state is given to self-heal (e.g.
+// Wi-Fi roaming, a brief mobile-data handoff) before being treated as actually
+// gone. STUN-only connectivity (see ICE_SERVERS below) can take a while to
+// re-establish after a real network change, so this errs toward patience over
+// fast failure — a false "connection lost" is far more disruptive mid-transfer
+// than a few extra seconds of a stalled progress bar.
+const DISCONNECT_GRACE_MS = 15000;
+
+// STUN alone only works when at least one side's NAT allows a direct UDP path
+// to be discovered and to stay open; it cannot relay traffic when that's not
+// possible (symmetric NAT, some corporate/mobile carrier networks) and doesn't
+// help if a NAT silently drops an idle UDP binding mid-transfer. Configure a
+// TURN server via these env vars to add a relay fallback for exactly those
+// cases — optional and off by default so this keeps working with zero setup.
+const ICE_SERVERS: RTCIceServer[] = [
+  { urls: 'stun:stun.l.google.com:19302' },
+  { urls: 'stun:stun1.l.google.com:19302' },
+];
+if (process.env.NEXT_PUBLIC_TURN_URL) {
+  ICE_SERVERS.push({
+    urls: process.env.NEXT_PUBLIC_TURN_URL,
+    username: process.env.NEXT_PUBLIC_TURN_USERNAME,
+    credential: process.env.NEXT_PUBLIC_TURN_CREDENTIAL,
+  });
+}
+
 // ─── WebRTC Data Channels are E2E encrypted by default via DTLS ──────────────
 
 // ─── Types ───────────────────────────────────────────────────────────────────
@@ -227,12 +253,65 @@ export function usePeerLink({ role, code: initialCode }: UsePeerLinkProps) {
   }, []);
 
   const setupPeerConnection = useCallback((sessionCode: string) => {
-    const pc = new RTCPeerConnection({
-      iceServers: [
-        { urls: 'stun:stun.l.google.com:19302' },
-        { urls: 'stun:stun1.l.google.com:19302' },
-      ],
-    });
+    // A fresh negotiation (e.g. an automatic reconnect to the same still-alive
+    // signaling room after the previous WebRTC connection died) always creates a
+    // brand-new RTCPeerConnection/DataChannel here. Explicitly close out whatever
+    // the previous attempt left behind first rather than silently orphaning it,
+    // and reset both sides' per-transfer state — a connection that just went
+    // dark mid-transfer never got the chance to run its own cancel/eof cleanup.
+    if (pcRef.current) {
+      try { pcRef.current.close(); } catch { /* already closed */ }
+    }
+    if (dcRef.current) {
+      try { dcRef.current.close(); } catch { /* already closed */ }
+    }
+    if (disconnectGraceTimerRef.current) {
+      clearTimeout(disconnectGraceTimerRef.current);
+      disconnectGraceTimerRef.current = null;
+    }
+
+    // Sender side: without this, currentlyStreamingRef stays permanently
+    // non-null, wedging every future request_file for that index forever.
+    currentlyStreamingRef.current = null;
+    setIsStreaming(false);
+
+    // Receiver side: whatever was mid-download has an orphaned OPFS
+    // writable/worker/RAM-buffer that will never get its 'eof' — release it
+    // and clear the reservation, otherwise downloadingIndex stays stuck,
+    // disabling every Get/Again button and stalling the download queue
+    // forever even after the reconnect otherwise succeeds. (No-op on a normal
+    // first connect, since nothing has started downloading yet.)
+    if (speedIntervalRef.current) {
+      clearInterval(speedIntervalRef.current);
+      speedIntervalRef.current = null;
+    }
+    setSpeedBytesPerSec(0);
+    setEtaSeconds(null);
+    releaseWakeLock();
+    if (fileStreamRef.current) {
+      fileStreamRef.current.close().catch(() => {});
+      fileStreamRef.current = null;
+    }
+    let hadOrphanedOpfsFile = false;
+    if (opfsWritableRef.current) {
+      opfsWritableRef.current.close().catch(() => {});
+      opfsWritableRef.current = null;
+      opfsFileHandleRef.current = null;
+      hadOrphanedOpfsFile = true;
+    }
+    if (opfsWorkerRef.current) {
+      terminateOpfsWorker();
+      opfsFileHandleRef.current = null;
+      hadOrphanedOpfsFile = true;
+    }
+    if (hadOrphanedOpfsFile) removeOpfsFile(incomingFilenameRef.current);
+    receiveBufferRef.current = [];
+    receivedSizeRef.current = 0;
+    downloadingIndexRef.current = null;
+    setDownloadingIndex(null);
+    setProgress(0);
+
+    const pc = new RTCPeerConnection({ iceServers: ICE_SERVERS });
     pcRef.current = pc;
 
     pc.onicecandidate = (event) => {
@@ -267,15 +346,23 @@ export function usePeerLink({ role, code: initialCode }: UsePeerLinkProps) {
         // a grace period before treating the peer as actually gone, so we don't
         // flash a scary error (and hide transfer controls) for a hiccup that
         // resolves on its own.
-        if (!disconnectGraceTimerRef.current) {
-          disconnectGraceTimerRef.current = setTimeout(() => {
-            disconnectGraceTimerRef.current = null;
-            if (pcRef.current?.connectionState === 'disconnected') {
-              setIsPeerConnected(false);
-              setStatus('Peer disconnected. Connection lost.');
-            }
-          }, 6000);
+        //
+        // Always clear and reschedule (rather than only scheduling when no
+        // timer is pending) — a connection that flaps disconnected->connecting
+        // ->disconnected is actively in the middle of recovering, and reusing
+        // the ORIGINAL timer's deadline could declare it dead mid-recovery
+        // just because it happened to sample as 'disconnected' again at that
+        // stale mark.
+        if (disconnectGraceTimerRef.current) {
+          clearTimeout(disconnectGraceTimerRef.current);
         }
+        disconnectGraceTimerRef.current = setTimeout(() => {
+          disconnectGraceTimerRef.current = null;
+          if (pcRef.current?.connectionState === 'disconnected') {
+            setIsPeerConnected(false);
+            setStatus('Peer disconnected. Connection lost.');
+          }
+        }, DISCONNECT_GRACE_MS);
         return;
       }
 
@@ -291,7 +378,7 @@ export function usePeerLink({ role, code: initialCode }: UsePeerLinkProps) {
     };
 
     return pc;
-  }, [role, sendSignalingMessage]);
+  }, [role, sendSignalingMessage, releaseWakeLock, terminateOpfsWorker, removeOpfsFile]);
 
   // ── Speed ticker ─────────────────────────────────────────────────────────────
 
@@ -670,6 +757,16 @@ export function usePeerLink({ role, code: initialCode }: UsePeerLinkProps) {
   // ── Main connect ────────────────────────────────────────────────────────────
 
   const connect = useCallback(async (sessionCode: string) => {
+    // A fresh connect() (e.g. an automatic reconnect after the WebRTC
+    // connection died while the signaling room stayed alive) always opens a
+    // new signaling WebSocket. Close out a previous one first rather than
+    // leaving it open and orphaned — the wsRef.current !== ws guards on its
+    // handlers already make this safe either way, but there's no reason to
+    // keep two live sockets registered against the same room.
+    if (wsRef.current) {
+      try { wsRef.current.close(); } catch { /* already closed */ }
+    }
+
     setCode(sessionCode);
     setStatus('Connecting to signaling server...');
     setIsPeerConnected(false);
