@@ -244,6 +244,22 @@ export function usePeerLink({ role, code: initialCode }: UsePeerLinkProps) {
     }
   }, []);
 
+  // Re-acquire the screen wake lock when the tab regains visibility. Per spec,
+  // a held Screen Wake Lock is unconditionally released the instant the
+  // document becomes hidden and never auto-reacquires — with no listener for
+  // this, a receiver whose screen locks or who switches away mid-download
+  // would stay unprotected against OS-level backgrounding/throttling for the
+  // rest of the transfer even after returning to the tab.
+  useEffect(() => {
+    const onVisibilityChange = () => {
+      if (document.visibilityState === 'visible' && (isStreaming || downloadingIndex !== null)) {
+        requestWakeLock();
+      }
+    };
+    document.addEventListener('visibilitychange', onVisibilityChange);
+    return () => document.removeEventListener('visibilitychange', onVisibilityChange);
+  }, [isStreaming, downloadingIndex, requestWakeLock]);
+
   // ── Signaling helpers ───────────────────────────────────────────────────────
 
   const sendSignalingMessage = useCallback((msg: object) => {
