@@ -502,7 +502,21 @@ export function usePeerLink({ role, code: initialCode }: UsePeerLinkProps) {
 
       let chunk: ArrayBuffer = rawChunk;
 
-      dc.send(chunk);
+      try {
+        dc.send(chunk);
+      } catch (err) {
+        // The data channel died mid-send (e.g. the underlying connection just
+        // dropped) — without this, the loop would throw here and skip the
+        // currentlyStreamingRef/isStreaming reset below, permanently wedging
+        // this index so a reconnected receiver's request_file is silently
+        // ignored forever (see the request_file re-entrancy guard above).
+        console.error('Error sending chunk (data channel closed):', err);
+        stopSpeedTicker();
+        currentlyStreamingRef.current = null;
+        setIsStreaming(false);
+        setStatus('Connection lost while sending.');
+        return;
+      }
       offset += rawChunk.byteLength;
       bytesSentRef = offset;
 
