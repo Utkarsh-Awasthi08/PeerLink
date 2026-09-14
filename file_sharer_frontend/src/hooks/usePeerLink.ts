@@ -1019,7 +1019,19 @@ export function usePeerLink({ role, code: initialCode }: UsePeerLinkProps) {
       downloadingIndexRef.current = index;
       setDownloadingIndex(index);
 
-      if (typeof navigator !== 'undefined' && navigator.storage && navigator.storage.estimate) {
+      const win = window as WindowWithFilePicker;
+      const saveFilePicker = win.showSaveFilePicker;
+
+      // navigator.storage.estimate() reports the quota for this origin's own
+      // sandboxed storage (OPFS/IndexedDB/CacheStorage) — it says nothing about
+      // real disk space, and is irrelevant when the File System Access API is
+      // about to stream straight into a real, user-chosen file outside that
+      // sandbox entirely. Gating on it unconditionally could reject a huge file
+      // that would have saved fine, purely because the browser's sandboxed-
+      // storage allowance (often far smaller than actual free disk, especially
+      // on Android) happens to be smaller than the file. Only relevant — and
+      // only checked — when OPFS is actually what's about to receive the data.
+      if (!saveFilePicker && typeof navigator !== 'undefined' && navigator.storage && navigator.storage.estimate) {
         try {
           const { quota, usage } = await navigator.storage.estimate();
           const available = (quota ?? 0) - (usage ?? 0);
@@ -1036,10 +1048,9 @@ export function usePeerLink({ role, code: initialCode }: UsePeerLinkProps) {
 
       requestWakeLock();
 
-      const win = window as WindowWithFilePicker;
-      if (typeof win.showSaveFilePicker === 'function') {
+      if (saveFilePicker) {
         try {
-          const handle = await win.showSaveFilePicker({
+          const handle = await saveFilePicker({
             suggestedName: fileInfo.name,
           });
           const writable = await handle.createWritable();
