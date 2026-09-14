@@ -21,6 +21,15 @@ export const generateCode = () => Math.floor(10000 + Math.random() * 90000).toSt
 // than a few extra seconds of a stalled progress bar.
 const DISCONNECT_GRACE_MS = 15000;
 
+// Mirrors the absolute connection-expiry enforced server-side
+// (SignalingHandler.java's 10-minute WebSocket cleanup): if no WebRTC
+// connection has taken over by then, the server force-closes the sender's
+// signaling socket and releases the room code, regardless of activity. Kept
+// as a duplicated constant rather than fetched from the server — it's fixed
+// and rarely changed, so a round trip just to read it isn't worth it — but
+// the two MUST be kept in sync by hand if that server-side value ever changes.
+const ROOM_EXPIRY_SECONDS = 10 * 60;
+
 // STUN alone only works when at least one side's NAT allows a direct UDP path
 // to be discovered and to stay open; it cannot relay traffic when that's not
 // possible (symmetric NAT, some corporate/mobile carrier networks) and doesn't
@@ -90,6 +99,11 @@ export function usePeerLink({ role, code: initialCode }: UsePeerLinkProps) {
   // True once the data channel is open; only goes false on a real (non-recovered) disconnect
   const [isPeerConnected, setIsPeerConnected] = useState(false);
 
+  // Sender-only: seconds left before the server's absolute connection-expiry
+  // timer (ROOM_EXPIRY_SECONDS) closes this room if no peer has connected by
+  // then. null before a room exists and once a peer has actually connected.
+  const [roomTimeRemaining, setRoomTimeRemaining] = useState<number | null>(null);
+
   // Pull / On-Demand specific state
   const [manifest, setManifest] = useState<FileManifestItem[]>([]);
   const manifestRef = useRef<FileManifestItem[]>([]);
@@ -107,6 +121,7 @@ export function usePeerLink({ role, code: initialCode }: UsePeerLinkProps) {
   const pcRef = useRef<RTCPeerConnection | null>(null);
   const dcRef = useRef<RTCDataChannel | null>(null);
   const disconnectGraceTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const roomTimerIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const codeRetriesRef = useRef(0); // sender: number of 'code_taken' retries for the current connect() call
 
   // Transfer control
@@ -434,6 +449,39 @@ export function usePeerLink({ role, code: initialCode }: UsePeerLinkProps) {
     setSpeedBytesPerSec(0);
     setEtaSeconds(null);
   }, []);
+
+  // ── Room expiry countdown (sender) ────────────────────────────────────────────
+  // Purely informational — the server enforces the actual deadline independently
+  // (SignalingHandler.java); this only surfaces it so the sender isn't caught off
+  // guard by the room silently disappearing mid-wait.
+
+  const startRoomTimer = useCallback(() => {
+    if (roomTimerIntervalRef.current) clearInterval(roomTimerIntervalRef.current);
+    const deadline = Date.now() + ROOM_EXPIRY_SECONDS * 1000;
+    setRoomTimeRemaining(ROOM_EXPIRY_SECONDS);
+    roomTimerIntervalRef.current = setInterval(() => {
+      const secondsLeft = Math.max(0, Math.round((deadline - Date.now()) / 1000));
+      setRoomTimeRemaining(secondsLeft);
+      if (secondsLeft === 0 && roomTimerIntervalRef.current) {
+        clearInterval(roomTimerIntervalRef.current);
+        roomTimerIntervalRef.current = null;
+      }
+    }, 1000);
+  }, []);
+
+  const stopRoomTimer = useCallback(() => {
+    if (roomTimerIntervalRef.current) {
+      clearInterval(roomTimerIntervalRef.current);
+      roomTimerIntervalRef.current = null;
+    }
+    setRoomTimeRemaining(null);
+  }, []);
+
+  // The deadline is moot the moment a peer actually connects — WebRTC has taken
+  // over independently of the signaling room's remaining lifetime.
+  useEffect(() => {
+    if (isPeerConnected) stopRoomTimer();
+  }, [isPeerConnected, stopRoomTimer]);
 
   // ── Stream Single File (Sender) ──────────────────────────────────────────────
   
@@ -818,6 +866,10 @@ export function usePeerLink({ role, code: initialCode }: UsePeerLinkProps) {
       setStatus('Connected. Waiting for peer...');
       sendSignalingMessage({ type: 'join', code: sessionCode, role });
 
+      if (role === 'sender') {
+        startRoomTimer();
+      }
+
       if (role === 'receiver') {
         // If sender doesn't exist, we won't get an offer. Time out after 10 seconds.
         connectionTimeout = setTimeout(() => {
@@ -890,7 +942,7 @@ export function usePeerLink({ role, code: initialCode }: UsePeerLinkProps) {
         return 'Disconnected.';
       });
     };
-  }, [role, wsUrl, sendSignalingMessage, initiateWebRTC, handleOffer]);
+  }, [role, wsUrl, sendSignalingMessage, initiateWebRTC, handleOffer, startRoomTimer]);
 
   // ── Pull/On-Demand API ─────────────────────────────────────────────────────
 
@@ -1135,6 +1187,7 @@ export function usePeerLink({ role, code: initialCode }: UsePeerLinkProps) {
 
   const disconnect = useCallback(() => {
     stopSpeedTicker();
+    stopRoomTimer();
     releaseWakeLock();
     if (disconnectGraceTimerRef.current) {
       clearTimeout(disconnectGraceTimerRef.current);
@@ -1159,7 +1212,7 @@ export function usePeerLink({ role, code: initialCode }: UsePeerLinkProps) {
     pcRef.current?.close();
     setCompletedFiles(new Set());
     setIsPeerConnected(false);
-  }, [stopSpeedTicker]);
+  }, [stopSpeedTicker, stopRoomTimer]);
 
   return {
     code,
@@ -1168,6 +1221,7 @@ export function usePeerLink({ role, code: initialCode }: UsePeerLinkProps) {
     fileProgresses,
     queuedFiles,
     isPeerConnected,
+    roomTimeRemaining,
     completedFiles,
     isPaused,
     isStreaming,

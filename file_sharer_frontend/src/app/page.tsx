@@ -284,7 +284,7 @@ export default function Home() {
                       </ul>
                     )}
 
-                    <InviteCode port={sender.code} />
+                    <InviteCode port={sender.code} secondsRemaining={sender.roomTimeRemaining} />
 
                     {sender.progress > 0 && !isSendingDone && sender.isStreaming && (
                       <div className="flex gap-2 mt-4">

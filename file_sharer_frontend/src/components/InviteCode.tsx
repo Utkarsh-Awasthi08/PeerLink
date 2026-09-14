@@ -2,13 +2,21 @@
 
 import { useState, useEffect } from 'react';
 import { QRCodeSVG } from 'qrcode.react';
-import { FiCopy, FiCheck, FiLink, FiLock, FiMaximize2, FiX } from 'react-icons/fi';
+import { FiCopy, FiCheck, FiLink, FiLock, FiMaximize2, FiX, FiClock } from 'react-icons/fi';
 
 interface InviteCodeProps {
   port: string | null;
+  /** Seconds left before the server closes this room if no peer has connected yet. */
+  secondsRemaining?: number | null;
 }
 
-export default function InviteCode({ port }: InviteCodeProps) {
+function formatDuration(totalSeconds: number): string {
+  const m = Math.floor(totalSeconds / 60);
+  const s = totalSeconds % 60;
+  return `${m}:${s.toString().padStart(2, '0')}`;
+}
+
+export default function InviteCode({ port, secondsRemaining }: InviteCodeProps) {
   const [copiedCode, setCopiedCode] = useState(false);
   const [copiedLink, setCopiedLink] = useState(false);
   const [showQrModal, setShowQrModal] = useState(false);
@@ -44,6 +52,16 @@ export default function InviteCode({ port }: InviteCodeProps) {
         <p className="text-sm text-green-600 mb-4">
           Share this code or link. Keep this tab open until the transfer completes.
         </p>
+
+        {typeof secondsRemaining === 'number' && (
+          <div className={`flex items-center gap-1.5 text-xs font-semibold mb-4 px-3 py-2 rounded-lg border ${
+            secondsRemaining <= 60
+              ? 'bg-red-50 text-red-600 border-red-200'
+              : 'bg-amber-50 text-amber-700 border-amber-200'}`}>
+            <FiClock className="w-3.5 h-3.5 flex-shrink-0" />
+            Room expires in {formatDuration(secondsRemaining)} — connect before then
+          </div>
+        )}
 
         {/* QR + text section */}
         <div className="flex gap-4 items-start">
