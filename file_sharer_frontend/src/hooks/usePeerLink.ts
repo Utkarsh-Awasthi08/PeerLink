@@ -516,6 +516,7 @@ export function usePeerLink({ role, code: initialCode }: UsePeerLinkProps) {
     const LOW_WATERMARK = 8 * 1024 * 1024; // 8 MB backpressure
     let offset = 0;
     let bytesSentRef = 0;
+    let lastReportedPct = -1;
 
     startSpeedTicker(() => bytesSentRef, () => file.size);
 
@@ -584,9 +585,15 @@ export function usePeerLink({ role, code: initialCode }: UsePeerLinkProps) {
       offset += rawChunk.byteLength;
       bytesSentRef = offset;
 
-      // Update per-file sender UI progress
+      // Update per-file sender UI progress — only on an actual visible change,
+      // rather than forcing a React re-render of the whole file list on every
+      // single 256 KB chunk (1000+ times for a large file) for no visible
+      // benefit, since the displayed percentage only changes ~100 times total.
       const filePct = Math.round((offset / file.size) * 100);
-      setFileProgresses(prev => ({ ...prev, [index]: filePct }));
+      if (filePct !== lastReportedPct) {
+        lastReportedPct = filePct;
+        setFileProgresses(prev => ({ ...prev, [index]: filePct }));
+      }
     }
 
     stopSpeedTicker();
