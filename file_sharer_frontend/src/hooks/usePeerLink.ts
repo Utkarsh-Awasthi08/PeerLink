@@ -77,7 +77,10 @@ interface FileSystemHandleLike {
 }
 
 interface WindowWithFilePicker extends Window {
-  showSaveFilePicker?: (options?: { suggestedName?: string }) => Promise<FileSystemHandleLike>;
+  showSaveFilePicker?: (options?: {
+    suggestedName?: string;
+    startIn?: 'desktop' | 'documents' | 'downloads' | 'music' | 'pictures' | 'videos';
+  }) => Promise<FileSystemHandleLike>;
 }
 
 // ─── Hook ────────────────────────────────────────────────────────────────────
@@ -1111,6 +1114,11 @@ export function usePeerLink({ role, code: initialCode }: UsePeerLinkProps) {
         try {
           const handle = await saveFilePicker({
             suggestedName: fileInfo.name,
+            // Can't skip this dialog entirely — the browser requires it as a
+            // security boundary — but defaulting it straight into Downloads
+            // with the filename already filled in makes it a single click
+            // instead of having to navigate there manually each time.
+            startIn: 'downloads',
           });
           const writable = await handle.createWritable();
           fileStreamRef.current = writable;
