@@ -24,6 +24,16 @@ const FATAL_STATUSES = new Set([
   'Disconnected.',
   'Disconnected: Rate limit exceeded.',
   'WebSocket error. Please retry.',
+  'Disconnected by sender.',
+]);
+
+// Statuses that represent an intentional/permanent close by the remote peer —
+// auto-retrying these would immediately reconnect to the same room the sender
+// just left, which is never what the receiver wants.
+const NO_RETRY_STATUSES = new Set([
+  'No peer found for this code.',
+  'Disconnected by sender.',
+  'Disconnected: Rate limit exceeded.',
 ]);
 
 import { useRouter } from 'next/navigation';
@@ -88,7 +98,11 @@ export default function DownloadPage() {
   useEffect(() => {
     if (!FATAL_STATUSES.has(status)) return;
 
-    if (status !== 'No peer found for this code.' && !autoRetriedRef.current) {
+    // Only auto-retry transient network failures — never retry after an
+    // intentional sender exit or a permanent error (rate limit, no sender found).
+    // Retrying 'Disconnected by sender.' would reconnect the receiver to the
+    // exact same room the sender just vacated.
+    if (!NO_RETRY_STATUSES.has(status) && !autoRetriedRef.current) {
       autoRetriedRef.current = true;
       toast('Connection lost — reconnecting...', { icon: '🔄' });
       connect(code);
