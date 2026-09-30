@@ -1,0 +1,718 @@
+diff --git a/.DS_Store b/.DS_Store
+index fb53873..90e34d8 100644
+Binary files a/.DS_Store and b/.DS_Store differ
+diff --git a/file_sharer_backend/src/main/java/com/peerlink/backend/handler/SignalingHandler.java b/file_sharer_backend/src/main/java/com/peerlink/backend/handler/SignalingHandler.java
+index f187991..eb516e4 100644
+--- a/file_sharer_backend/src/main/java/com/peerlink/backend/handler/SignalingHandler.java
++++ b/file_sharer_backend/src/main/java/com/peerlink/backend/handler/SignalingHandler.java
+@@ -34,9 +34,16 @@ public class SignalingHandler extends TextWebSocketHandler {
+     // instance A must not collide with one connected to instance B. Tracks which code (if any)
+     // each session claimed, so the claim can be released as soon as that sender disconnects
+     // rather than sitting on the TTL.
+-    private static final String CODE_CLAIM_PREFIX = "peerlink:code:";
++    private static final String CODE_CLAIM_PREFIX    = "peerlink:code:";
++    // Receiver lock — mirrors the sender lock above. Ensures only ONE receiver can
++    // occupy a room at a time, making every session strictly 1-to-1 (true P2P).
++    // Released eagerly in afterConnectionClosed; TTL is a safety net for zombie sessions.
++    private static final String RECEIVER_CLAIM_PREFIX = "peerlink:receiver:";
+     private static final Duration CODE_CLAIM_TTL = Duration.ofMinutes(15);
+-    private final ConcurrentHashMap<WebSocketSession, String> claimedCodes = new ConcurrentHashMap<>();
++    private final ConcurrentHashMap<WebSocketSession, String> claimedCodes         = new ConcurrentHashMap<>();
++    // Tracks which room code each receiver session has locked, so the lock can be
++    // released as soon as that receiver disconnects rather than sitting on the TTL.
++    private final ConcurrentHashMap<WebSocketSession, String> claimedReceiverCodes = new ConcurrentHashMap<>();
+ 
+     // Track connection times for absolute 10-minute expiry
+     private final ConcurrentHashMap<WebSocketSession, Long> connectionTimes = new ConcurrentHashMap<>();
+@@ -84,16 +91,16 @@ public class SignalingHandler extends TextWebSocketHandler {
+     public SignalingHandler(StringRedisTemplate redisTemplate) {
+         this.redisTemplate = redisTemplate;
+ 
+-        // Start cleanup task to aggressively expire WebSockets after 10 minutes
++        // Start cleanup task to aggressively expire WebSockets after 5 minutes
+         // This prevents resource leaks for abandoned sender tabs. WebRTC data channels
+         // take over after negotiation, so the WebSocket is unnecessary after a few seconds anyway.
+         scheduler.scheduleAtFixedRate(() -> {
+             long now = System.currentTimeMillis();
+-            long maxDuration = 10 * 60 * 1000; // 10 minutes
++            long maxDuration = 5 * 60 * 1000; // 5 minutes
+             for (Map.Entry<WebSocketSession, Long> entry : connectionTimes.entrySet()) {
+                 if (now - entry.getValue() > maxDuration) {
+                     try {
+-                        entry.getKey().close(new CloseStatus(1000, "Session expired after 10 minutes to save resources."));
++                        entry.getKey().close(new CloseStatus(1000, "Session expired after 5 minutes to save resources."));
+                     } catch (IOException e) {
+                         // ignore
+                     }
+@@ -202,6 +209,20 @@ public class SignalingHandler extends TextWebSocketHandler {
+             // Register session locally
+             if ("sender".equals(sigMsg.getRole())) {
+                 String code = sigMsg.getCode();
++
++                // ── Code-rotation support ──────────────────────────────────────────────────
++                // When a sender sends a second 'join' over the same still-open WebSocket
++                // (e.g. after "Kick & New Code"), they are rotating to a fresh room code.
++                // Release the OLD code's Redis claim and local senders entry before claiming
++                // the new one — otherwise the old code leaks in Redis until its TTL expires
++                // and the senders map accumulates stale entries for dead codes.
++                String previousCode = claimedCodes.get(session);
++                if (previousCode != null && !previousCode.equals(code)) {
++                    redisTemplate.delete(CODE_CLAIM_PREFIX + previousCode);
++                    senders.remove(previousCode);
++                    claimedCodes.remove(session);
++                }
++
+                 Boolean claimed = redisTemplate.opsForValue()
+                         .setIfAbsent(CODE_CLAIM_PREFIX + code, session.getId(), CODE_CLAIM_TTL);
+                 if (!Boolean.TRUE.equals(claimed)) {
+@@ -217,13 +238,83 @@ public class SignalingHandler extends TextWebSocketHandler {
+                 claimedCodes.put(session, code);
+                 senders.put(code, session);
+             } else if ("receiver".equals(sigMsg.getRole())) {
+-                receivers.put(sigMsg.getCode(), session);
++                String rCode = sigMsg.getCode();
++
++                // ── Guard 1: sender must exist ────────────────────────────────────────────
++                // Reject immediately if no sender has ever claimed this code in Redis.
++                // This gives instant feedback instead of a silent 10-second wait.
++                String senderOwner = redisTemplate.opsForValue().get(CODE_CLAIM_PREFIX + rCode);
++                if (senderOwner == null) {
++                    SignalingMessage notFound = new SignalingMessage();
++                    notFound.setType("room_not_found");
++                    notFound.setCode(rCode);
++                    notFound.setRole("receiver");
++                    try {
++                        session.sendMessage(new TextMessage(objectMapper.writeValueAsString(notFound)));
++                    } catch (IOException e) { /* ignore */ }
++                    return;
++                }
++
++                // ── Guard 2: atomic receiver lock ─────────────────────────────────────────
++                // SETNX: only succeeds when no other receiver holds this room. Any second
++                // receiver is rejected BEFORE we broadcast to Redis, so the sender never
++                // receives a message and the live connection is completely unaffected.
++                Boolean receiverClaimed = redisTemplate.opsForValue()
++                        .setIfAbsent(RECEIVER_CLAIM_PREFIX + rCode, session.getId(), CODE_CLAIM_TTL);
++                if (!Boolean.TRUE.equals(receiverClaimed)) {
++                    SignalingMessage roomFull = new SignalingMessage();
++                    roomFull.setType("room_full");
++                    roomFull.setCode(rCode);
++                    roomFull.setRole("receiver");
++                    try {
++                        session.sendMessage(new TextMessage(objectMapper.writeValueAsString(roomFull)));
++                    } catch (IOException e) { /* ignore */ }
++                    return;
++                }
++
++                // Lock acquired — register this session as the authorised receiver.
++                claimedReceiverCodes.put(session, rCode);
++                receivers.put(rCode, session);
+             }
+             // Broadcast join so the other peer knows we arrived
+             redisTemplate.convertAndSend(RedisConfig.SIGNALING_TOPIC, payload);
+             return;
+         }
+ 
++        // ── Kick Receiver ──────────────────────────────────────────────────────────────
++        // Handled directly here (no Redis pub/sub relay) because the sender's WebSocket
++        // session is on THIS instance, and we can look up the receiver's session directly
++        // via the local receivers map — a round-trip through Redis is unnecessary and
++        // would complicate the flow for no benefit.
++        if ("kick_receiver".equals(sigMsg.getType()) && "sender".equals(sigMsg.getRole())) {
++            String kCode = sigMsg.getCode();
++
++            // 1. Release the Redis receiver lock eagerly so the very next receiver
++            //    can join immediately without hitting room_full.
++            redisTemplate.delete(RECEIVER_CLAIM_PREFIX + kCode);
++
++            // 2. Evict and notify the receiver WebSocket session.
++            WebSocketSession receiverSession = receivers.remove(kCode);
++            if (receiverSession != null && receiverSession.isOpen()) {
++                // Remove their claimedReceiverCodes entry first — otherwise
++                // afterConnectionClosed would try to delete the Redis key again (double-delete is
++                // harmless but noisy), and the claimedReceiverCodes map would accumulate the stale
++                // entry until GC.
++                claimedReceiverCodes.remove(receiverSession);
++
++                SignalingMessage kicked = new SignalingMessage();
++                kicked.setType("kicked");
++                kicked.setCode(kCode);
++                kicked.setRole("sender");
++                try {
++                    receiverSession.sendMessage(new TextMessage(objectMapper.writeValueAsString(kicked)));
++                } catch (IOException e) {
++                    // Receiver may have already closed — safe to ignore
++                }
++            }
++            return;
++        }
++
+         // For other messages (offer, answer, ice-candidate), publish to Redis so that
+         // it can be routed to the correct counterpart.
+         redisTemplate.convertAndSend(RedisConfig.SIGNALING_TOPIC, payload);
+@@ -240,6 +331,12 @@ public class SignalingHandler extends TextWebSocketHandler {
+         if (claimedCode != null) {
+             redisTemplate.delete(CODE_CLAIM_PREFIX + claimedCode);
+         }
++        // Release the receiver lock eagerly so the next legitimate receiver can
++        // join immediately after the previous one disconnects, without waiting for the TTL.
++        String claimedReceiverCode = claimedReceiverCodes.remove(session);
++        if (claimedReceiverCode != null) {
++            redisTemplate.delete(RECEIVER_CLAIM_PREFIX + claimedReceiverCode);
++        }
+         String ip = sessionIps.remove(session);
+         if (ip != null) {
+             totalConnections.decrementAndGet();
+diff --git a/file_sharer_frontend/src/app/d/[code]/page.tsx b/file_sharer_frontend/src/app/d/[code]/page.tsx
+index 2e8a05f..304790b 100644
+--- a/file_sharer_frontend/src/app/d/[code]/page.tsx
++++ b/file_sharer_frontend/src/app/d/[code]/page.tsx
+@@ -305,6 +305,7 @@ export default function DownloadPage() {
+                           progress={progress}
+                           speedBytesPerSec={speedBytesPerSec}
+                           etaSeconds={etaSeconds}
++                          isTransferring={true}
+                           color="blue"
+                         />
+                       </div>
+diff --git a/file_sharer_frontend/src/app/layout.tsx b/file_sharer_frontend/src/app/layout.tsx
+index d1ecca3..8a34b80 100644
+--- a/file_sharer_frontend/src/app/layout.tsx
++++ b/file_sharer_frontend/src/app/layout.tsx
+@@ -3,6 +3,8 @@ import type { Metadata } from 'next'
+ import { Inter } from 'next/font/google'
+ import { Toaster } from "react-hot-toast";
+ import Navbar from '@/components/Navbar';
++import { PeerLinkProvider } from '@/context/PeerLinkContext';
++import TransferMiniPlayer from '@/components/TransferMiniPlayer';
+ 
+ const inter = Inter({ subsets: ['latin'] })
+ 
+@@ -36,11 +38,14 @@ export default function RootLayout({
+   return (
+     <html lang="en">
+       <body className={inter.className}>
+-        <Navbar />
+-        <main className="min-h-screen bg-gray-50 pt-16">
+-          {children}
+-          <Toaster position="top-center" reverseOrder={false} />
+-        </main>
++        <PeerLinkProvider>
++          <Navbar />
++          <TransferMiniPlayer />
++          <main className="min-h-screen bg-gray-50 pt-16">
++            {children}
++            <Toaster position="top-center" reverseOrder={false} />
++          </main>
++        </PeerLinkProvider>
+       </body>
+     </html>
+   )
+diff --git a/file_sharer_frontend/src/app/page.tsx b/file_sharer_frontend/src/app/page.tsx
+index 23ac4d2..36eec19 100644
+--- a/file_sharer_frontend/src/app/page.tsx
++++ b/file_sharer_frontend/src/app/page.tsx
+@@ -1,16 +1,16 @@
+ 'use client';
+ 
+-import { useState, useEffect, useRef } from 'react';
++import { useEffect, useRef } from 'react';
+ import Image from 'next/image';
+ import FileUpload from '@/components/FileUpload';
+ import FileDownload from '@/components/FileDownload';
+ import InviteCode from '@/components/InviteCode';
+-import { usePeerLink, generateCode } from '@/hooks/usePeerLink';
++import { usePeerLinkContext } from '@/context/PeerLinkContext';
+ import toast from 'react-hot-toast';
+ import {
+   FiPause, FiPlay, FiShield, FiX, FiShare2, FiFile, FiCheck,
+   FiPlusCircle, FiClock, FiZap, FiLock, FiSliders, FiDownloadCloud,
+-  FiLayers, FiRefreshCw,
++  FiLayers, FiRefreshCw, FiUserX,
+ } from 'react-icons/fi';
+ 
+ function formatBytes(bytes: number): string {
+@@ -84,78 +84,53 @@ const FEATURES = [
+ ];
+ 
+ export default function Home() {
+-  const [activeTab, setActiveTab] = useState<'upload' | 'download'>('upload');
+-  const [selectedFiles, setSelectedFiles] = useState<File[]>([]);
+-  const [isSharing, setIsSharing] = useState(false);
++  // ── All state & hooks live in PeerLinkContext (never unmounts on navigation) ──
++  const {
++    sender,
++    receiver,
++    selectedFiles,
++    setSelectedFiles,
++    isSharing,
++    setActiveTab,
++    activeTab,
++    handleFilesSelected,
++    handleShare,
++    handleCancelShare,
++    handleAddMoreFiles: handleAddMoreFilesCtx,
++    handleDisconnectPeer,
++    handleKickAndRefresh,
++  } = usePeerLinkContext();
++
++  // DOM ref for the hidden file-input — stays local; it refs a DOM node that
++  // only exists while this component is mounted, so it cannot live in context.
+   const addMoreInputRef = useRef<HTMLInputElement>(null);
+ 
+-  const sender = usePeerLink({ role: 'sender' });
+-  const receiver = usePeerLink({ role: 'receiver' });
+-
++  // URL query-param handling (e.g. ?error=...&tab=download from the /d/ redirect).
++  // NOTE: No disconnect() cleanup return — that would kill the transfer on nav!
+   useEffect(() => {
+-    if (typeof window !== 'undefined') {
+-      const searchParams = new URLSearchParams(window.location.search);
+-      const errorMsg = searchParams.get('error');
+-      const tab = searchParams.get('tab');
+-      if (errorMsg) {
+-        toast.error(decodeURIComponent(errorMsg), { duration: 4000 });
+-        window.history.replaceState({}, '', window.location.pathname);
+-      }
+-      if (tab === 'download') setActiveTab('download');
++    if (typeof window === 'undefined') return;
++    const searchParams = new URLSearchParams(window.location.search);
++    const errorMsg = searchParams.get('error');
++    const tab = searchParams.get('tab');
++    if (errorMsg) {
++      toast.error(decodeURIComponent(errorMsg), { duration: 4000 });
++      window.history.replaceState({}, '', window.location.pathname);
+     }
+-    return () => { sender.disconnect(); receiver.disconnect(); };
++    if (tab === 'download') setActiveTab('download');
+     // eslint-disable-next-line react-hooks/exhaustive-deps
+   }, []);
+ 
+-  const handleFilesSelected = (files: File[]) => {
+-    setSelectedFiles((prev) => {
+-      const existing = new Set(prev.map((f) => `${f.name}-${f.size}`));
+-      return [...prev, ...files.filter((f) => !existing.has(`${f.name}-${f.size}`))];
+-    });
+-  };
+-
+-  const removeFile = (index: number) => setSelectedFiles((prev) => prev.filter((_, i) => i !== index));
+-
+-  const handleShare = () => {
+-    if (selectedFiles.length === 0) return;
+-    setIsSharing(true);
+-    sender.connect(generateCode());
+-  };
+-
+-  useEffect(() => {
+-    if (sender.status === 'Peer connected! Ready for transfer.' && isSharing && selectedFiles.length > 0) {
+-      toast.success('Peer connected! Waiting for receiver to request files...');
+-      sender.shareFiles(selectedFiles);
+-    }
+-    // eslint-disable-next-line react-hooks/exhaustive-deps
+-  }, [sender.status]);
+-
+-  const handleCancelShare = () => { sender.disconnect(); setIsSharing(false); setSelectedFiles([]); };
++  const removeFile = (index: number) =>
++    setSelectedFiles((prev) => prev.filter((_, i) => i !== index));
+ 
+   const handleAddMoreFiles = (e: React.ChangeEvent<HTMLInputElement>) => {
+     const files = Array.from(e.target.files || []);
+-    if (files.length === 0) return;
+-    setSelectedFiles(prev => {
+-      const existing = new Set(prev.map(f => `${f.name}-${f.size}`));
+-      return [...prev, ...files.filter(f => !existing.has(`${f.name}-${f.size}`))];
+-    });
+-    sender.addFiles(files);
++    handleAddMoreFilesCtx(files);
+     if (addMoreInputRef.current) addMoreInputRef.current.value = '';
+   };
+ 
+   const handleDownload = (code: string) => { window.location.href = `/d/${code}`; };
+ 
+-  useEffect(() => {
+-    if (!receiver.receivedFile) return;
+-    const { blob, filename } = receiver.receivedFile;
+-    const url = URL.createObjectURL(blob);
+-    const link = document.createElement('a');
+-    link.href = url; link.download = filename;
+-    document.body.appendChild(link); link.click(); link.remove();
+-    setTimeout(() => URL.revokeObjectURL(url), 5000);
+-    toast.success(`Downloaded "${filename}" ✅`);
+-  }, [receiver.receivedFile]);
+-
+   const isSendingDone = sender.status.includes('sent successfully');
+   const isErr = (s: string) =>
+     s.toLowerCase().includes('disconnect') ||
+@@ -308,6 +283,26 @@ export default function Home() {
+                           className="w-full flex items-center justify-center gap-2 py-2.5 px-4 rounded-xl text-sm font-semibold text-blue-600 bg-blue-50 hover:bg-blue-100 border border-blue-200 transition-all active:scale-[.98]">
+                           <FiPlusCircle className="w-4 h-4" /> + Add More Files
+                         </button>
++
++                        {/* ── Peer control strip ────────────────────────────── */}
++                        <div className="flex gap-2">
++                          <button
++                            id="btn-disconnect-peer"
++                            onClick={handleDisconnectPeer}
++                            title="Disconnect this receiver. Your files stay staged — the next receiver can join using the same code."
++                            className="flex-1 py-2.5 px-3 rounded-xl font-semibold text-sm flex justify-center items-center gap-2 bg-orange-50 text-orange-600 hover:bg-orange-100 border border-orange-200 transition-all active:scale-[.98]"
++                          >
++                            <FiUserX className="w-4 h-4" /> Disconnect Peer
++                          </button>
++                          <button
++                            id="btn-kick-refresh"
++                            onClick={handleKickAndRefresh}
++                            title="Disconnect this receiver AND generate a new room code. They cannot rejoin. Your files stay staged."
++                            className="flex-1 py-2.5 px-3 rounded-xl font-semibold text-sm flex justify-center items-center gap-2 bg-red-50 text-red-500 hover:bg-red-100 border border-red-200 transition-all active:scale-[.98]"
++                          >
++                            <FiRefreshCw className="w-4 h-4" /> Kick &amp; New Code
++                          </button>
++                        </div>
+                       </>
+                     )}
+ 
+diff --git a/file_sharer_frontend/src/components/TransferStats.tsx b/file_sharer_frontend/src/components/TransferStats.tsx
+index 90a9fbc..c403eda 100644
+--- a/file_sharer_frontend/src/components/TransferStats.tsx
++++ b/file_sharer_frontend/src/components/TransferStats.tsx
+@@ -7,6 +7,7 @@ interface TransferStatsProps {
+   speedBytesPerSec: number;
+   etaSeconds: number | null;
+   isPaused?: boolean;
++  isTransferring?: boolean; // when true, always show speed + ETA (even if 0)
+   color?: 'blue' | 'green';
+ }
+ 
+@@ -28,6 +29,7 @@ export default function TransferStats({
+   speedBytesPerSec,
+   etaSeconds,
+   isPaused = false,
++  isTransferring = false,
+   color = 'blue',
+ }: TransferStatsProps) {
+   const barColor = color === 'green' ? 'bg-green-500' : 'bg-blue-600';
+@@ -50,19 +52,19 @@ export default function TransferStats({
+         <span className="font-semibold text-gray-700">{progress}%</span>
+ 
+         <div className="flex items-center gap-3">
+-          {/* Transfer speed */}
+-          {speedBytesPerSec > 0 && !isPaused && (
++          {/* Transfer speed – always visible once transfer is active */}
++          {(isTransferring || speedBytesPerSec > 0) && !isPaused && (
+             <span className="flex items-center gap-1">
+               <FiZap className="w-3 h-3 text-yellow-500" />
+               {formatSpeed(speedBytesPerSec)}
+             </span>
+           )}
+ 
+-          {/* ETA */}
+-          {etaSeconds !== null && !isPaused && (
++          {/* ETA – always visible once transfer is active */}
++          {(isTransferring || etaSeconds !== null) && !isPaused && (
+             <span className="flex items-center gap-1">
+               <FiClock className="w-3 h-3 text-blue-400" />
+-              {formatEta(etaSeconds)} left
++              {etaSeconds !== null ? `${formatEta(etaSeconds)} left` : '...'}
+             </span>
+           )}
+ 
+diff --git a/file_sharer_frontend/src/hooks/usePeerLink.ts b/file_sharer_frontend/src/hooks/usePeerLink.ts
+index ac4511f..ec3430a 100644
+--- a/file_sharer_frontend/src/hooks/usePeerLink.ts
++++ b/file_sharer_frontend/src/hooks/usePeerLink.ts
+@@ -22,13 +22,13 @@ export const generateCode = () => Math.floor(10000 + Math.random() * 90000).toSt
+ const DISCONNECT_GRACE_MS = 15000;
+ 
+ // Mirrors the absolute connection-expiry enforced server-side
+-// (SignalingHandler.java's 10-minute WebSocket cleanup): if no WebRTC
++// (SignalingHandler.java's 5-minute WebSocket cleanup): if no WebRTC
+ // connection has taken over by then, the server force-closes the sender's
+ // signaling socket and releases the room code, regardless of activity. Kept
+ // as a duplicated constant rather than fetched from the server — it's fixed
+ // and rarely changed, so a round trip just to read it isn't worth it — but
+ // the two MUST be kept in sync by hand if that server-side value ever changes.
+-const ROOM_EXPIRY_SECONDS = 10 * 60;
++const ROOM_EXPIRY_SECONDS = 5 * 60;
+ 
+ // STUN alone only works when at least one side's NAT allows a direct UDP path
+ // to be discovered and to stay open; it cannot relay traffic when that's not
+@@ -138,10 +138,16 @@ export function usePeerLink({ role, code: initialCode }: UsePeerLinkProps) {
+   // call by several renders; this ref cannot.
+   const downloadingIndexRef = useRef<number | null>(null);
+ 
+-  // Speed tracking
++  // Speed tracking – rolling 3-second window
++  // Each sample is [timestampMs, totalBytesTransferredAtThatMoment]
++  const speedSamplesRef   = useRef<[number, number][]>([]);
++  const speedIntervalRef  = useRef<ReturnType<typeof setInterval> | null>(null);
++  // Last non-zero speed/ETA — used as a fallback when the current window reads 0
++  const lastSpeedRef      = useRef<number>(0);
++  const lastEtaRef        = useRef<number | null>(null);
++  // Keep legacy refs so nothing else in the file needs changing
+   const bytesAtLastTickRef = useRef<number>(0);
+-  const lastTickTimeRef = useRef<number>(0);
+-  const speedIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
++  const lastTickTimeRef    = useRef<number>(0);
+ 
+   // Receive buffers (reset per file)
+   const receiveBufferRef = useRef<ArrayBuffer[]>([]);
+@@ -415,29 +421,76 @@ export function usePeerLink({ role, code: initialCode }: UsePeerLinkProps) {
+   }, [role, sendSignalingMessage, releaseWakeLock, terminateOpfsWorker, removeOpfsFile]);
+ 
+   // ── Speed ticker ─────────────────────────────────────────────────────────────
++  //
++  // Uses a 3-second rolling window of (timestamp, bytesTransferred) samples.
++  // Each tick we:
++  //   1. Push the latest sample into the window.
++  //   2. Evict samples older than ROLLING_WINDOW_MS.
++  //   3. Compute bytes-per-second across the surviving window.
++  //   4. If the live window speed is 0 (network hiccup / backpressure pause),
++  //      we fall back to the last *non-zero* speed and ETA so the UI never
++  //      flashes blank for a few seconds mid-transfer.
++
++  const ROLLING_WINDOW_MS = 3000;
+ 
+   const startSpeedTicker = useCallback((getBytesTransferred: () => number, getTotal: () => number) => {
+-    bytesAtLastTickRef.current = 0;
+-    lastTickTimeRef.current = Date.now();
++    // Reset all tracking state
++    speedSamplesRef.current  = [];
++    lastSpeedRef.current     = 0;
++    lastEtaRef.current       = null;
++    bytesAtLastTickRef.current = 0;   // legacy compat
++    lastTickTimeRef.current    = Date.now();
+     setProgress(0);
+     setEtaSeconds(null);
+     setSpeedBytesPerSec(0);
+ 
+     if (speedIntervalRef.current) clearInterval(speedIntervalRef.current);
++
+     speedIntervalRef.current = setInterval(() => {
+-      const now = Date.now();
+-      const elapsed = (now - lastTickTimeRef.current) / 1000;
++      const now         = Date.now();
+       const transferred = getBytesTransferred();
+-      const delta = transferred - bytesAtLastTickRef.current;
+-      const speed = elapsed > 0 ? delta / elapsed : 0;
++      const total       = getTotal();
++
++      // 1. Add the latest sample
++      speedSamplesRef.current.push([now, transferred]);
++
++      // 2. Evict samples outside the rolling window
++      const cutoff = now - ROLLING_WINDOW_MS;
++      speedSamplesRef.current = speedSamplesRef.current.filter(([t]) => t >= cutoff);
++
++      // 3. Compute speed over the surviving window
++      let liveSpeed = 0;
++      const samples = speedSamplesRef.current;
++      if (samples.length >= 2) {
++        const oldest  = samples[0];
++        const newest  = samples[samples.length - 1];
++        const elapsedMs = newest[0] - oldest[0];
++        const bytesDelta = newest[1] - oldest[1];
++        if (elapsedMs > 0 && bytesDelta >= 0) {
++          liveSpeed = (bytesDelta / elapsedMs) * 1000; // bytes per second
++        }
++      }
++
++      // 4. Persist the last *valid* (non-zero) speed and ETA as fallbacks
++      const remaining = total - transferred;
++      let liveEta: number | null = liveSpeed > 0 ? Math.ceil(remaining / liveSpeed) : null;
++
++      if (liveSpeed > 0) {
++        lastSpeedRef.current = liveSpeed;
++        lastEtaRef.current   = liveEta;
++      }
+ 
++      // Emit: prefer live values; fall back to last known when live is 0
++      const emittedSpeed = liveSpeed > 0 ? liveSpeed : lastSpeedRef.current;
++      const emittedEta   = liveEta   !== null ? liveEta   : lastEtaRef.current;
++
++      // Legacy compat refs (nothing else in this file reads them for speed calc)
+       bytesAtLastTickRef.current = transferred;
+-      lastTickTimeRef.current = now;
+-      setSpeedBytesPerSec(speed);
++      lastTickTimeRef.current    = now;
++
++      setSpeedBytesPerSec(emittedSpeed);
++      setEtaSeconds(emittedEta);
+ 
+-      const total = getTotal();
+-      const remaining = total - transferred;
+-      setEtaSeconds(speed > 0 ? Math.ceil(remaining / speed) : null);
+       if (total > 0) {
+         setProgress(Math.round((transferred / total) * 100));
+       }
+@@ -912,6 +965,14 @@ export function usePeerLink({ role, code: initialCode }: UsePeerLinkProps) {
+           setCode(sessionCode);
+           sendSignalingMessage({ type: 'join', code: sessionCode, role });
+         } else if (msg.type === 'join' && msg.role === 'receiver') {
++          // ── Layer 2 guard: never disrupt an already-connected peer ──────────────
++          // isPeerConnected is React state (can lag one render); dcRef.current
++          // is a synchronous DOM property — checking both is belt-and-suspenders.
++          if (isPeerConnected || dcRef.current?.readyState === 'open') {
++            console.warn('[PeerLink] Ignoring duplicate join — already connected to a peer.');
++            return;
++          }
++          // ── END GUARD ───────────────────────────────────────────────────────────
+           setStatus('Receiver joined! Creating offer...');
+           await initiateWebRTC(sessionCode);
+         } else if (msg.type === 'answer') {
+@@ -920,7 +981,66 @@ export function usePeerLink({ role, code: initialCode }: UsePeerLinkProps) {
+           await pcRef.current?.addIceCandidate(new RTCIceCandidate(msg.payload));
+         }
+       } else {
+-        if (msg.type === 'offer') {
++        // ── Layer 3: handle server rejection/control messages ────────────────────
++        if (msg.type === 'room_not_found') {
++          // Server confirmed no sender exists for this code — give instant feedback
++          // instead of the previous 10-second silent wait.
++          if (connectionTimeout) clearTimeout(connectionTimeout);
++          setStatus('No sender found for this code. Check the code and try again.');
++          ws.close();
++        } else if (msg.type === 'room_full') {
++          // A receiver is already connected to this sender. PeerLink is strictly
++          // 1-to-1 — only one receiver per room is ever allowed.
++          if (connectionTimeout) clearTimeout(connectionTimeout);
++          setStatus('This room is already in use. Only 1-to-1 direct transfers are supported.');
++          ws.close();
++        } else if (msg.type === 'kicked') {
++          // ── Sender evicted us from the room ──────────────────────────────────
++          // Close WebRTC cleanly, discard any in-progress download, and reset
++          // to the code-entry screen. The sender may be re-using the same code
++          // (new receiver can join shortly) or rotating to a new one entirely.
++          if (connectionTimeout) clearTimeout(connectionTimeout);
++          stopSpeedTicker();
++          releaseWakeLock();
++          // Tear down WebRTC gracefully
++          try { dcRef.current?.close(); } catch { /* ignore */ }
++          try { pcRef.current?.close(); } catch { /* ignore */ }
++          dcRef.current = null;
++          pcRef.current = null;
++          if (disconnectGraceTimerRef.current) {
++            clearTimeout(disconnectGraceTimerRef.current);
++            disconnectGraceTimerRef.current = null;
++          }
++          // Discard any partial in-progress download (same cleanup as 'cancel')
++          receiveBufferRef.current = [];
++          receivedSizeRef.current = 0;
++          if (fileStreamRef.current) {
++            try { await fileStreamRef.current.close(); } catch { /* ignore */ }
++            fileStreamRef.current = null;
++          }
++          let hadOpfsKick = false;
++          if (opfsWritableRef.current) {
++            try { await opfsWritableRef.current.close(); } catch { /* ignore */ }
++            opfsWritableRef.current = null;
++            opfsFileHandleRef.current = null;
++            hadOpfsKick = true;
++          }
++          if (opfsWorkerRef.current) {
++            terminateOpfsWorker();
++            opfsFileHandleRef.current = null;
++            hadOpfsKick = true;
++          }
++          if (hadOpfsKick) removeOpfsFile(incomingFilenameRef.current);
++          downloadingIndexRef.current = null;
++          setDownloadingIndex(null);
++          setProgress(0);
++          setIsPeerConnected(false);
++          setManifest([]);
++          manifestRef.current = [];
++          setStatus('Disconnected by sender.');
++          ws.close();
++          toast('Disconnected by the sender.', { icon: '🔌' });
++        } else if (msg.type === 'offer') {
+           if (connectionTimeout) clearTimeout(connectionTimeout);
+           setStatus('Offer received. Connecting...');
+           await handleOffer(msg.payload, sessionCode);
+@@ -1198,6 +1318,82 @@ export function usePeerLink({ role, code: initialCode }: UsePeerLinkProps) {
+     }
+   }, [requestWakeLock, terminateOpfsWorker, stopSpeedTicker, releaseWakeLock]);
+ 
++  // ── Disconnect Peer (Sender-initiated kick) ────────────────────────────────
++  // Evicts the current receiver while keeping all staged files ready for the
++  // next receiver. The signaling WebSocket stays open — the sender's room
++  // remains registered in the backend, so a new receiver can join immediately
++  // without any reconnect on the sender side.
++  //
++  // refreshCode = false → keep same room code (receiver could rejoin if they know it)
++  // refreshCode = true  → rotate to a fresh code  (receiver cannot rejoin)
++
++  const disconnectPeer = useCallback((refreshCode: boolean = false) => {
++    // 1. Abort any in-flight streaming loop before touching WebRTC.
++    //    Without this, streamFile's next dc.send() call throws on the dead
++    //    channel and permanently wedges currentlyStreamingRef.
++    cancelledRef.current = true;
++    pausedRef.current = false;
++    setIsPaused(false);
++    if (resumeResolverRef.current) {
++      resumeResolverRef.current();
++      resumeResolverRef.current = null;
++    }
++
++    // 2. Stop all timers / wake lock.
++    stopSpeedTicker();
++    if (disconnectGraceTimerRef.current) {
++      clearTimeout(disconnectGraceTimerRef.current);
++      disconnectGraceTimerRef.current = null;
++    }
++    releaseWakeLock();
++
++    // 3. Notify the backend (and through it, the receiver) BEFORE tearing down
++    //    WebRTC — the kick_receiver message travels over the signaling WS, which
++    //    is still open at this point.
++    const codeAtKickTime = code;
++    sendSignalingMessage({ type: 'kick_receiver', code: codeAtKickTime, role: 'sender' });
++
++    // 4. Tear down WebRTC. We set pcRef/dcRef to null first so any delayed
++    //    onconnectionstatechange events from the PC we're closing are ignored by
++    //    the "if (pcRef.current !== pc) return" guards in setupPeerConnection.
++    const oldPc = pcRef.current;
++    const oldDc = dcRef.current;
++    pcRef.current = null;
++    dcRef.current = null;
++    try { oldDc?.close(); } catch { /* ignore */ }
++    try { oldPc?.close(); } catch { /* ignore */ }
++
++    // 5. Reset peer / transfer state — but leave stagedFilesRef, selectedFiles,
++    //    and the file progress map structure intact. We reset progress to 0
++    //    because the next receiver starts from scratch.
++    currentlyStreamingRef.current = null;
++    setIsStreaming(false);
++    setIsPeerConnected(false);
++    setProgress(0);
++    setQueuedFiles(new Set());
++    setCompletedFiles(new Set());
++    const resetProgresses: Record<number, number> = {};
++    stagedFilesRef.current.forEach((_, i) => { resetProgresses[i] = 0; });
++    setFileProgresses(resetProgresses);
++
++    // 6. Optionally rotate the room code.
++    if (refreshCode) {
++      const newCode = generateCode();
++      setCode(newCode);
++      // Re-use the still-open signaling WS to claim the new code.
++      // The backend's sender join handler now handles code-rotation (releasing
++      // the old Redis claim before claiming the new one).
++      sendSignalingMessage({ type: 'join', code: newCode, role: 'sender' });
++      setStatus('New code ready. Waiting for peer...');
++      startRoomTimer();
++    } else {
++      // Same code — the room is already open on the backend; no re-join needed.
++      // Start the room timer again so the sender sees the expiry countdown.
++      setStatus('Receiver disconnected. Waiting for next peer...');
++      startRoomTimer();
++    }
++  }, [code, stopSpeedTicker, releaseWakeLock, sendSignalingMessage, startRoomTimer]);
++
+   // ── Cleanup ──────────────────────────────────────────────────────────────────
+ 
+   const disconnect = useCallback(() => {
+@@ -1254,5 +1450,6 @@ export function usePeerLink({ role, code: initialCode }: UsePeerLinkProps) {
+     pause,
+     resume,
+     disconnect,
++    disconnectPeer,
+   };
+ }

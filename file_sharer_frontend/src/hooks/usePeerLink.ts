@@ -22,13 +22,13 @@ export const generateCode = () => Math.floor(10000 + Math.random() * 90000).toSt
 const DISCONNECT_GRACE_MS = 15000;
 
 // Mirrors the absolute connection-expiry enforced server-side
-// (SignalingHandler.java's 10-minute WebSocket cleanup): if no WebRTC
+// (SignalingHandler.java's 5-minute WebSocket cleanup): if no WebRTC
 // connection has taken over by then, the server force-closes the sender's
 // signaling socket and releases the room code, regardless of activity. Kept
 // as a duplicated constant rather than fetched from the server — it's fixed
 // and rarely changed, so a round trip just to read it isn't worth it — but
 // the two MUST be kept in sync by hand if that server-side value ever changes.
-const ROOM_EXPIRY_SECONDS = 10 * 60;
+const ROOM_EXPIRY_SECONDS = 5 * 60;
 
 // STUN alone only works when at least one side's NAT allows a direct UDP path
 // to be discovered and to stay open; it cannot relay traffic when that's not
@@ -138,10 +138,16 @@ export function usePeerLink({ role, code: initialCode }: UsePeerLinkProps) {
   // call by several renders; this ref cannot.
   const downloadingIndexRef = useRef<number | null>(null);
 
-  // Speed tracking
+  // Speed tracking – rolling 3-second window
+  // Each sample is [timestampMs, totalBytesTransferredAtThatMoment]
+  const speedSamplesRef   = useRef<[number, number][]>([]);
+  const speedIntervalRef  = useRef<ReturnType<typeof setInterval> | null>(null);
+  // Last non-zero speed/ETA — used as a fallback when the current window reads 0
+  const lastSpeedRef      = useRef<number>(0);
+  const lastEtaRef        = useRef<number | null>(null);
+  // Keep legacy refs so nothing else in the file needs changing
   const bytesAtLastTickRef = useRef<number>(0);
-  const lastTickTimeRef = useRef<number>(0);
-  const speedIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const lastTickTimeRef    = useRef<number>(0);
 
   // Receive buffers (reset per file)
   const receiveBufferRef = useRef<ArrayBuffer[]>([]);
@@ -415,29 +421,76 @@ export function usePeerLink({ role, code: initialCode }: UsePeerLinkProps) {
   }, [role, sendSignalingMessage, releaseWakeLock, terminateOpfsWorker, removeOpfsFile]);
 
   // ── Speed ticker ─────────────────────────────────────────────────────────────
+  //
+  // Uses a 3-second rolling window of (timestamp, bytesTransferred) samples.
+  // Each tick we:
+  //   1. Push the latest sample into the window.
+  //   2. Evict samples older than ROLLING_WINDOW_MS.
+  //   3. Compute bytes-per-second across the surviving window.
+  //   4. If the live window speed is 0 (network hiccup / backpressure pause),
+  //      we fall back to the last *non-zero* speed and ETA so the UI never
+  //      flashes blank for a few seconds mid-transfer.
+
+  const ROLLING_WINDOW_MS = 3000;
 
   const startSpeedTicker = useCallback((getBytesTransferred: () => number, getTotal: () => number) => {
-    bytesAtLastTickRef.current = 0;
-    lastTickTimeRef.current = Date.now();
+    // Reset all tracking state
+    speedSamplesRef.current  = [];
+    lastSpeedRef.current     = 0;
+    lastEtaRef.current       = null;
+    bytesAtLastTickRef.current = 0;   // legacy compat
+    lastTickTimeRef.current    = Date.now();
     setProgress(0);
     setEtaSeconds(null);
     setSpeedBytesPerSec(0);
 
     if (speedIntervalRef.current) clearInterval(speedIntervalRef.current);
+
     speedIntervalRef.current = setInterval(() => {
-      const now = Date.now();
-      const elapsed = (now - lastTickTimeRef.current) / 1000;
+      const now         = Date.now();
       const transferred = getBytesTransferred();
-      const delta = transferred - bytesAtLastTickRef.current;
-      const speed = elapsed > 0 ? delta / elapsed : 0;
+      const total       = getTotal();
 
-      bytesAtLastTickRef.current = transferred;
-      lastTickTimeRef.current = now;
-      setSpeedBytesPerSec(speed);
+      // 1. Add the latest sample
+      speedSamplesRef.current.push([now, transferred]);
 
-      const total = getTotal();
+      // 2. Evict samples outside the rolling window
+      const cutoff = now - ROLLING_WINDOW_MS;
+      speedSamplesRef.current = speedSamplesRef.current.filter(([t]) => t >= cutoff);
+
+      // 3. Compute speed over the surviving window
+      let liveSpeed = 0;
+      const samples = speedSamplesRef.current;
+      if (samples.length >= 2) {
+        const oldest  = samples[0];
+        const newest  = samples[samples.length - 1];
+        const elapsedMs = newest[0] - oldest[0];
+        const bytesDelta = newest[1] - oldest[1];
+        if (elapsedMs > 0 && bytesDelta >= 0) {
+          liveSpeed = (bytesDelta / elapsedMs) * 1000; // bytes per second
+        }
+      }
+
+      // 4. Persist the last *valid* (non-zero) speed and ETA as fallbacks
       const remaining = total - transferred;
-      setEtaSeconds(speed > 0 ? Math.ceil(remaining / speed) : null);
+      let liveEta: number | null = liveSpeed > 0 ? Math.ceil(remaining / liveSpeed) : null;
+
+      if (liveSpeed > 0) {
+        lastSpeedRef.current = liveSpeed;
+        lastEtaRef.current   = liveEta;
+      }
+
+      // Emit: prefer live values; fall back to last known when live is 0
+      const emittedSpeed = liveSpeed > 0 ? liveSpeed : lastSpeedRef.current;
+      const emittedEta   = liveEta   !== null ? liveEta   : lastEtaRef.current;
+
+      // Legacy compat refs (nothing else in this file reads them for speed calc)
+      bytesAtLastTickRef.current = transferred;
+      lastTickTimeRef.current    = now;
+
+      setSpeedBytesPerSec(emittedSpeed);
+      setEtaSeconds(emittedEta);
+
       if (total > 0) {
         setProgress(Math.round((transferred / total) * 100));
       }
@@ -912,6 +965,14 @@ export function usePeerLink({ role, code: initialCode }: UsePeerLinkProps) {
           setCode(sessionCode);
           sendSignalingMessage({ type: 'join', code: sessionCode, role });
         } else if (msg.type === 'join' && msg.role === 'receiver') {
+          // ── Layer 2 guard: never disrupt an already-connected peer ──────────────
+          // isPeerConnected is React state (can lag one render); dcRef.current
+          // is a synchronous DOM property — checking both is belt-and-suspenders.
+          if (isPeerConnected || dcRef.current?.readyState === 'open') {
+            console.warn('[PeerLink] Ignoring duplicate join — already connected to a peer.');
+            return;
+          }
+          // ── END GUARD ───────────────────────────────────────────────────────────
           setStatus('Receiver joined! Creating offer...');
           await initiateWebRTC(sessionCode);
         } else if (msg.type === 'answer') {
@@ -920,7 +981,66 @@ export function usePeerLink({ role, code: initialCode }: UsePeerLinkProps) {
           await pcRef.current?.addIceCandidate(new RTCIceCandidate(msg.payload));
         }
       } else {
-        if (msg.type === 'offer') {
+        // ── Layer 3: handle server rejection/control messages ────────────────────
+        if (msg.type === 'room_not_found') {
+          // Server confirmed no sender exists for this code — give instant feedback
+          // instead of the previous 10-second silent wait.
+          if (connectionTimeout) clearTimeout(connectionTimeout);
+          setStatus('No sender found for this code. Check the code and try again.');
+          ws.close();
+        } else if (msg.type === 'room_full') {
+          // A receiver is already connected to this sender. PeerLink is strictly
+          // 1-to-1 — only one receiver per room is ever allowed.
+          if (connectionTimeout) clearTimeout(connectionTimeout);
+          setStatus('This room is already in use. Only 1-to-1 direct transfers are supported.');
+          ws.close();
+        } else if (msg.type === 'kicked') {
+          // ── Sender evicted us from the room ──────────────────────────────────
+          // Close WebRTC cleanly, discard any in-progress download, and reset
+          // to the code-entry screen. The sender may be re-using the same code
+          // (new receiver can join shortly) or rotating to a new one entirely.
+          if (connectionTimeout) clearTimeout(connectionTimeout);
+          stopSpeedTicker();
+          releaseWakeLock();
+          // Tear down WebRTC gracefully
+          try { dcRef.current?.close(); } catch { /* ignore */ }
+          try { pcRef.current?.close(); } catch { /* ignore */ }
+          dcRef.current = null;
+          pcRef.current = null;
+          if (disconnectGraceTimerRef.current) {
+            clearTimeout(disconnectGraceTimerRef.current);
+            disconnectGraceTimerRef.current = null;
+          }
+          // Discard any partial in-progress download (same cleanup as 'cancel')
+          receiveBufferRef.current = [];
+          receivedSizeRef.current = 0;
+          if (fileStreamRef.current) {
+            try { await fileStreamRef.current.close(); } catch { /* ignore */ }
+            fileStreamRef.current = null;
+          }
+          let hadOpfsKick = false;
+          if (opfsWritableRef.current) {
+            try { await opfsWritableRef.current.close(); } catch { /* ignore */ }
+            opfsWritableRef.current = null;
+            opfsFileHandleRef.current = null;
+            hadOpfsKick = true;
+          }
+          if (opfsWorkerRef.current) {
+            terminateOpfsWorker();
+            opfsFileHandleRef.current = null;
+            hadOpfsKick = true;
+          }
+          if (hadOpfsKick) removeOpfsFile(incomingFilenameRef.current);
+          downloadingIndexRef.current = null;
+          setDownloadingIndex(null);
+          setProgress(0);
+          setIsPeerConnected(false);
+          setManifest([]);
+          manifestRef.current = [];
+          setStatus('Disconnected by sender.');
+          ws.close();
+          toast('Disconnected by the sender.', { icon: '🔌' });
+        } else if (msg.type === 'offer') {
           if (connectionTimeout) clearTimeout(connectionTimeout);
           setStatus('Offer received. Connecting...');
           await handleOffer(msg.payload, sessionCode);
@@ -1198,6 +1318,82 @@ export function usePeerLink({ role, code: initialCode }: UsePeerLinkProps) {
     }
   }, [requestWakeLock, terminateOpfsWorker, stopSpeedTicker, releaseWakeLock]);
 
+  // ── Disconnect Peer (Sender-initiated kick) ────────────────────────────────
+  // Evicts the current receiver while keeping all staged files ready for the
+  // next receiver. The signaling WebSocket stays open — the sender's room
+  // remains registered in the backend, so a new receiver can join immediately
+  // without any reconnect on the sender side.
+  //
+  // refreshCode = false → keep same room code (receiver could rejoin if they know it)
+  // refreshCode = true  → rotate to a fresh code  (receiver cannot rejoin)
+
+  const disconnectPeer = useCallback((refreshCode: boolean = false) => {
+    // 1. Abort any in-flight streaming loop before touching WebRTC.
+    //    Without this, streamFile's next dc.send() call throws on the dead
+    //    channel and permanently wedges currentlyStreamingRef.
+    cancelledRef.current = true;
+    pausedRef.current = false;
+    setIsPaused(false);
+    if (resumeResolverRef.current) {
+      resumeResolverRef.current();
+      resumeResolverRef.current = null;
+    }
+
+    // 2. Stop all timers / wake lock.
+    stopSpeedTicker();
+    if (disconnectGraceTimerRef.current) {
+      clearTimeout(disconnectGraceTimerRef.current);
+      disconnectGraceTimerRef.current = null;
+    }
+    releaseWakeLock();
+
+    // 3. Notify the backend (and through it, the receiver) BEFORE tearing down
+    //    WebRTC — the kick_receiver message travels over the signaling WS, which
+    //    is still open at this point.
+    const codeAtKickTime = code;
+    sendSignalingMessage({ type: 'kick_receiver', code: codeAtKickTime, role: 'sender' });
+
+    // 4. Tear down WebRTC. We set pcRef/dcRef to null first so any delayed
+    //    onconnectionstatechange events from the PC we're closing are ignored by
+    //    the "if (pcRef.current !== pc) return" guards in setupPeerConnection.
+    const oldPc = pcRef.current;
+    const oldDc = dcRef.current;
+    pcRef.current = null;
+    dcRef.current = null;
+    try { oldDc?.close(); } catch { /* ignore */ }
+    try { oldPc?.close(); } catch { /* ignore */ }
+
+    // 5. Reset peer / transfer state — but leave stagedFilesRef, selectedFiles,
+    //    and the file progress map structure intact. We reset progress to 0
+    //    because the next receiver starts from scratch.
+    currentlyStreamingRef.current = null;
+    setIsStreaming(false);
+    setIsPeerConnected(false);
+    setProgress(0);
+    setQueuedFiles(new Set());
+    setCompletedFiles(new Set());
+    const resetProgresses: Record<number, number> = {};
+    stagedFilesRef.current.forEach((_, i) => { resetProgresses[i] = 0; });
+    setFileProgresses(resetProgresses);
+
+    // 6. Optionally rotate the room code.
+    if (refreshCode) {
+      const newCode = generateCode();
+      setCode(newCode);
+      // Re-use the still-open signaling WS to claim the new code.
+      // The backend's sender join handler now handles code-rotation (releasing
+      // the old Redis claim before claiming the new one).
+      sendSignalingMessage({ type: 'join', code: newCode, role: 'sender' });
+      setStatus('New code ready. Waiting for peer...');
+      startRoomTimer();
+    } else {
+      // Same code — the room is already open on the backend; no re-join needed.
+      // Start the room timer again so the sender sees the expiry countdown.
+      setStatus('Receiver disconnected. Waiting for next peer...');
+      startRoomTimer();
+    }
+  }, [code, stopSpeedTicker, releaseWakeLock, sendSignalingMessage, startRoomTimer]);
+
   // ── Cleanup ──────────────────────────────────────────────────────────────────
 
   const disconnect = useCallback(() => {
@@ -1254,5 +1450,6 @@ export function usePeerLink({ role, code: initialCode }: UsePeerLinkProps) {
     pause,
     resume,
     disconnect,
+    disconnectPeer,
   };
 }

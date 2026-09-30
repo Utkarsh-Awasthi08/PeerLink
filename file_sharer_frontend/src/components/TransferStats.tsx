@@ -7,6 +7,7 @@ interface TransferStatsProps {
   speedBytesPerSec: number;
   etaSeconds: number | null;
   isPaused?: boolean;
+  isTransferring?: boolean; // when true, always show speed + ETA (even if 0)
   color?: 'blue' | 'green';
 }
 
@@ -28,6 +29,7 @@ export default function TransferStats({
   speedBytesPerSec,
   etaSeconds,
   isPaused = false,
+  isTransferring = false,
   color = 'blue',
 }: TransferStatsProps) {
   const barColor = color === 'green' ? 'bg-green-500' : 'bg-blue-600';
@@ -50,19 +52,19 @@ export default function TransferStats({
         <span className="font-semibold text-gray-700">{progress}%</span>
 
         <div className="flex items-center gap-3">
-          {/* Transfer speed */}
-          {speedBytesPerSec > 0 && !isPaused && (
+          {/* Transfer speed – always visible once transfer is active */}
+          {(isTransferring || speedBytesPerSec > 0) && !isPaused && (
             <span className="flex items-center gap-1">
               <FiZap className="w-3 h-3 text-yellow-500" />
               {formatSpeed(speedBytesPerSec)}
             </span>
           )}
 
-          {/* ETA */}
-          {etaSeconds !== null && !isPaused && (
+          {/* ETA – always visible once transfer is active */}
+          {(isTransferring || etaSeconds !== null) && !isPaused && (
             <span className="flex items-center gap-1">
               <FiClock className="w-3 h-3 text-blue-400" />
-              {formatEta(etaSeconds)} left
+              {etaSeconds !== null ? `${formatEta(etaSeconds)} left` : '...'}
             </span>
           )}
 

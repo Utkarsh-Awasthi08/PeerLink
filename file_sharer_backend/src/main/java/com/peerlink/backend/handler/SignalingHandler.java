@@ -34,9 +34,16 @@ public class SignalingHandler extends TextWebSocketHandler {
     // instance A must not collide with one connected to instance B. Tracks which code (if any)
     // each session claimed, so the claim can be released as soon as that sender disconnects
     // rather than sitting on the TTL.
-    private static final String CODE_CLAIM_PREFIX = "peerlink:code:";
+    private static final String CODE_CLAIM_PREFIX    = "peerlink:code:";
+    // Receiver lock — mirrors the sender lock above. Ensures only ONE receiver can
+    // occupy a room at a time, making every session strictly 1-to-1 (true P2P).
+    // Released eagerly in afterConnectionClosed; TTL is a safety net for zombie sessions.
+    private static final String RECEIVER_CLAIM_PREFIX = "peerlink:receiver:";
     private static final Duration CODE_CLAIM_TTL = Duration.ofMinutes(15);
-    private final ConcurrentHashMap<WebSocketSession, String> claimedCodes = new ConcurrentHashMap<>();
+    private final ConcurrentHashMap<WebSocketSession, String> claimedCodes         = new ConcurrentHashMap<>();
+    // Tracks which room code each receiver session has locked, so the lock can be
+    // released as soon as that receiver disconnects rather than sitting on the TTL.
+    private final ConcurrentHashMap<WebSocketSession, String> claimedReceiverCodes = new ConcurrentHashMap<>();
 
     // Track connection times for absolute 10-minute expiry
     private final ConcurrentHashMap<WebSocketSession, Long> connectionTimes = new ConcurrentHashMap<>();
@@ -84,16 +91,16 @@ public class SignalingHandler extends TextWebSocketHandler {
     public SignalingHandler(StringRedisTemplate redisTemplate) {
         this.redisTemplate = redisTemplate;
 
-        // Start cleanup task to aggressively expire WebSockets after 10 minutes
+        // Start cleanup task to aggressively expire WebSockets after 5 minutes
         // This prevents resource leaks for abandoned sender tabs. WebRTC data channels
         // take over after negotiation, so the WebSocket is unnecessary after a few seconds anyway.
         scheduler.scheduleAtFixedRate(() -> {
             long now = System.currentTimeMillis();
-            long maxDuration = 10 * 60 * 1000; // 10 minutes
+            long maxDuration = 5 * 60 * 1000; // 5 minutes
             for (Map.Entry<WebSocketSession, Long> entry : connectionTimes.entrySet()) {
                 if (now - entry.getValue() > maxDuration) {
                     try {
-                        entry.getKey().close(new CloseStatus(1000, "Session expired after 10 minutes to save resources."));
+                        entry.getKey().close(new CloseStatus(1000, "Session expired after 5 minutes to save resources."));
                     } catch (IOException e) {
                         // ignore
                     }
@@ -202,6 +209,20 @@ public class SignalingHandler extends TextWebSocketHandler {
             // Register session locally
             if ("sender".equals(sigMsg.getRole())) {
                 String code = sigMsg.getCode();
+
+                // ── Code-rotation support ──────────────────────────────────────────────────
+                // When a sender sends a second 'join' over the same still-open WebSocket
+                // (e.g. after "Kick & New Code"), they are rotating to a fresh room code.
+                // Release the OLD code's Redis claim and local senders entry before claiming
+                // the new one — otherwise the old code leaks in Redis until its TTL expires
+                // and the senders map accumulates stale entries for dead codes.
+                String previousCode = claimedCodes.get(session);
+                if (previousCode != null && !previousCode.equals(code)) {
+                    redisTemplate.delete(CODE_CLAIM_PREFIX + previousCode);
+                    senders.remove(previousCode);
+                    claimedCodes.remove(session);
+                }
+
                 Boolean claimed = redisTemplate.opsForValue()
                         .setIfAbsent(CODE_CLAIM_PREFIX + code, session.getId(), CODE_CLAIM_TTL);
                 if (!Boolean.TRUE.equals(claimed)) {
@@ -217,10 +238,80 @@ public class SignalingHandler extends TextWebSocketHandler {
                 claimedCodes.put(session, code);
                 senders.put(code, session);
             } else if ("receiver".equals(sigMsg.getRole())) {
-                receivers.put(sigMsg.getCode(), session);
+                String rCode = sigMsg.getCode();
+
+                // ── Guard 1: sender must exist ────────────────────────────────────────────
+                // Reject immediately if no sender has ever claimed this code in Redis.
+                // This gives instant feedback instead of a silent 10-second wait.
+                String senderOwner = redisTemplate.opsForValue().get(CODE_CLAIM_PREFIX + rCode);
+                if (senderOwner == null) {
+                    SignalingMessage notFound = new SignalingMessage();
+                    notFound.setType("room_not_found");
+                    notFound.setCode(rCode);
+                    notFound.setRole("receiver");
+                    try {
+                        session.sendMessage(new TextMessage(objectMapper.writeValueAsString(notFound)));
+                    } catch (IOException e) { /* ignore */ }
+                    return;
+                }
+
+                // ── Guard 2: atomic receiver lock ─────────────────────────────────────────
+                // SETNX: only succeeds when no other receiver holds this room. Any second
+                // receiver is rejected BEFORE we broadcast to Redis, so the sender never
+                // receives a message and the live connection is completely unaffected.
+                Boolean receiverClaimed = redisTemplate.opsForValue()
+                        .setIfAbsent(RECEIVER_CLAIM_PREFIX + rCode, session.getId(), CODE_CLAIM_TTL);
+                if (!Boolean.TRUE.equals(receiverClaimed)) {
+                    SignalingMessage roomFull = new SignalingMessage();
+                    roomFull.setType("room_full");
+                    roomFull.setCode(rCode);
+                    roomFull.setRole("receiver");
+                    try {
+                        session.sendMessage(new TextMessage(objectMapper.writeValueAsString(roomFull)));
+                    } catch (IOException e) { /* ignore */ }
+                    return;
+                }
+
+                // Lock acquired — register this session as the authorised receiver.
+                claimedReceiverCodes.put(session, rCode);
+                receivers.put(rCode, session);
             }
             // Broadcast join so the other peer knows we arrived
             redisTemplate.convertAndSend(RedisConfig.SIGNALING_TOPIC, payload);
+            return;
+        }
+
+        // ── Kick Receiver ──────────────────────────────────────────────────────────────
+        // Handled directly here (no Redis pub/sub relay) because the sender's WebSocket
+        // session is on THIS instance, and we can look up the receiver's session directly
+        // via the local receivers map — a round-trip through Redis is unnecessary and
+        // would complicate the flow for no benefit.
+        if ("kick_receiver".equals(sigMsg.getType()) && "sender".equals(sigMsg.getRole())) {
+            String kCode = sigMsg.getCode();
+
+            // 1. Release the Redis receiver lock eagerly so the very next receiver
+            //    can join immediately without hitting room_full.
+            redisTemplate.delete(RECEIVER_CLAIM_PREFIX + kCode);
+
+            // 2. Evict and notify the receiver WebSocket session.
+            WebSocketSession receiverSession = receivers.remove(kCode);
+            if (receiverSession != null && receiverSession.isOpen()) {
+                // Remove their claimedReceiverCodes entry first — otherwise
+                // afterConnectionClosed would try to delete the Redis key again (double-delete is
+                // harmless but noisy), and the claimedReceiverCodes map would accumulate the stale
+                // entry until GC.
+                claimedReceiverCodes.remove(receiverSession);
+
+                SignalingMessage kicked = new SignalingMessage();
+                kicked.setType("kicked");
+                kicked.setCode(kCode);
+                kicked.setRole("sender");
+                try {
+                    receiverSession.sendMessage(new TextMessage(objectMapper.writeValueAsString(kicked)));
+                } catch (IOException e) {
+                    // Receiver may have already closed — safe to ignore
+                }
+            }
             return;
         }
 
@@ -239,6 +330,12 @@ public class SignalingHandler extends TextWebSocketHandler {
         String claimedCode = claimedCodes.remove(session);
         if (claimedCode != null) {
             redisTemplate.delete(CODE_CLAIM_PREFIX + claimedCode);
+        }
+        // Release the receiver lock eagerly so the next legitimate receiver can
+        // join immediately after the previous one disconnects, without waiting for the TTL.
+        String claimedReceiverCode = claimedReceiverCodes.remove(session);
+        if (claimedReceiverCode != null) {
+            redisTemplate.delete(RECEIVER_CLAIM_PREFIX + claimedReceiverCode);
         }
         String ip = sessionIps.remove(session);
         if (ip != null) {

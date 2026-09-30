@@ -305,6 +305,7 @@ export default function DownloadPage() {
                           progress={progress}
                           speedBytesPerSec={speedBytesPerSec}
                           etaSeconds={etaSeconds}
+                          isTransferring={true}
                           color="blue"
                         />
                       </div>

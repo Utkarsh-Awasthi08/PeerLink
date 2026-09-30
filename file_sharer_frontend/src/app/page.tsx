@@ -1,16 +1,16 @@
 'use client';
 
-import { useState, useEffect, useRef } from 'react';
+import { useEffect, useRef } from 'react';
 import Image from 'next/image';
 import FileUpload from '@/components/FileUpload';
 import FileDownload from '@/components/FileDownload';
 import InviteCode from '@/components/InviteCode';
-import { usePeerLink, generateCode } from '@/hooks/usePeerLink';
+import { usePeerLinkContext } from '@/context/PeerLinkContext';
 import toast from 'react-hot-toast';
 import {
   FiPause, FiPlay, FiShield, FiX, FiShare2, FiFile, FiCheck,
   FiPlusCircle, FiClock, FiZap, FiLock, FiSliders, FiDownloadCloud,
-  FiLayers, FiRefreshCw,
+  FiLayers, FiRefreshCw, FiUserX,
 } from 'react-icons/fi';
 
 function formatBytes(bytes: number): string {
@@ -84,77 +84,52 @@ const FEATURES = [
 ];
 
 export default function Home() {
-  const [activeTab, setActiveTab] = useState<'upload' | 'download'>('upload');
-  const [selectedFiles, setSelectedFiles] = useState<File[]>([]);
-  const [isSharing, setIsSharing] = useState(false);
+  // ── All state & hooks live in PeerLinkContext (never unmounts on navigation) ──
+  const {
+    sender,
+    receiver,
+    selectedFiles,
+    setSelectedFiles,
+    isSharing,
+    setActiveTab,
+    activeTab,
+    handleFilesSelected,
+    handleShare,
+    handleCancelShare,
+    handleAddMoreFiles: handleAddMoreFilesCtx,
+    handleDisconnectPeer,
+    handleKickAndRefresh,
+  } = usePeerLinkContext();
+
+  // DOM ref for the hidden file-input — stays local; it refs a DOM node that
+  // only exists while this component is mounted, so it cannot live in context.
   const addMoreInputRef = useRef<HTMLInputElement>(null);
 
-  const sender = usePeerLink({ role: 'sender' });
-  const receiver = usePeerLink({ role: 'receiver' });
-
+  // URL query-param handling (e.g. ?error=...&tab=download from the /d/ redirect).
+  // NOTE: No disconnect() cleanup return — that would kill the transfer on nav!
   useEffect(() => {
-    if (typeof window !== 'undefined') {
-      const searchParams = new URLSearchParams(window.location.search);
-      const errorMsg = searchParams.get('error');
-      const tab = searchParams.get('tab');
-      if (errorMsg) {
-        toast.error(decodeURIComponent(errorMsg), { duration: 4000 });
-        window.history.replaceState({}, '', window.location.pathname);
-      }
-      if (tab === 'download') setActiveTab('download');
+    if (typeof window === 'undefined') return;
+    const searchParams = new URLSearchParams(window.location.search);
+    const errorMsg = searchParams.get('error');
+    const tab = searchParams.get('tab');
+    if (errorMsg) {
+      toast.error(decodeURIComponent(errorMsg), { duration: 4000 });
+      window.history.replaceState({}, '', window.location.pathname);
     }
-    return () => { sender.disconnect(); receiver.disconnect(); };
+    if (tab === 'download') setActiveTab('download');
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  const handleFilesSelected = (files: File[]) => {
-    setSelectedFiles((prev) => {
-      const existing = new Set(prev.map((f) => `${f.name}-${f.size}`));
-      return [...prev, ...files.filter((f) => !existing.has(`${f.name}-${f.size}`))];
-    });
-  };
-
-  const removeFile = (index: number) => setSelectedFiles((prev) => prev.filter((_, i) => i !== index));
-
-  const handleShare = () => {
-    if (selectedFiles.length === 0) return;
-    setIsSharing(true);
-    sender.connect(generateCode());
-  };
-
-  useEffect(() => {
-    if (sender.status === 'Peer connected! Ready for transfer.' && isSharing && selectedFiles.length > 0) {
-      toast.success('Peer connected! Waiting for receiver to request files...');
-      sender.shareFiles(selectedFiles);
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [sender.status]);
-
-  const handleCancelShare = () => { sender.disconnect(); setIsSharing(false); setSelectedFiles([]); };
+  const removeFile = (index: number) =>
+    setSelectedFiles((prev) => prev.filter((_, i) => i !== index));
 
   const handleAddMoreFiles = (e: React.ChangeEvent<HTMLInputElement>) => {
     const files = Array.from(e.target.files || []);
-    if (files.length === 0) return;
-    setSelectedFiles(prev => {
-      const existing = new Set(prev.map(f => `${f.name}-${f.size}`));
-      return [...prev, ...files.filter(f => !existing.has(`${f.name}-${f.size}`))];
-    });
-    sender.addFiles(files);
+    handleAddMoreFilesCtx(files);
     if (addMoreInputRef.current) addMoreInputRef.current.value = '';
   };
 
   const handleDownload = (code: string) => { window.location.href = `/d/${code}`; };
-
-  useEffect(() => {
-    if (!receiver.receivedFile) return;
-    const { blob, filename } = receiver.receivedFile;
-    const url = URL.createObjectURL(blob);
-    const link = document.createElement('a');
-    link.href = url; link.download = filename;
-    document.body.appendChild(link); link.click(); link.remove();
-    setTimeout(() => URL.revokeObjectURL(url), 5000);
-    toast.success(`Downloaded "${filename}" ✅`);
-  }, [receiver.receivedFile]);
 
   const isSendingDone = sender.status.includes('sent successfully');
   const isErr = (s: string) =>
@@ -308,6 +283,26 @@ export default function Home() {
                           className="w-full flex items-center justify-center gap-2 py-2.5 px-4 rounded-xl text-sm font-semibold text-blue-600 bg-blue-50 hover:bg-blue-100 border border-blue-200 transition-all active:scale-[.98]">
                           <FiPlusCircle className="w-4 h-4" /> + Add More Files
                         </button>
+
+                        {/* ── Peer control strip ────────────────────────────── */}
+                        <div className="flex gap-2">
+                          <button
+                            id="btn-disconnect-peer"
+                            onClick={handleDisconnectPeer}
+                            title="Disconnect this receiver. Your files stay staged — the next receiver can join using the same code."
+                            className="flex-1 py-2.5 px-3 rounded-xl font-semibold text-sm flex justify-center items-center gap-2 bg-orange-50 text-orange-600 hover:bg-orange-100 border border-orange-200 transition-all active:scale-[.98]"
+                          >
+                            <FiUserX className="w-4 h-4" /> Disconnect Peer
+                          </button>
+                          <button
+                            id="btn-kick-refresh"
+                            onClick={handleKickAndRefresh}
+                            title="Disconnect this receiver AND generate a new room code. They cannot rejoin. Your files stay staged."
+                            className="flex-1 py-2.5 px-3 rounded-xl font-semibold text-sm flex justify-center items-center gap-2 bg-red-50 text-red-500 hover:bg-red-100 border border-red-200 transition-all active:scale-[.98]"
+                          >
+                            <FiRefreshCw className="w-4 h-4" /> Kick &amp; New Code
+                          </button>
+                        </div>
                       </>
                     )}
 
