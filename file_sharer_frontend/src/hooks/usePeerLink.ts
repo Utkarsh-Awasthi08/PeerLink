@@ -329,12 +329,12 @@ export function usePeerLink({ role, code: initialCode }: UsePeerLinkProps) {
     setEtaSeconds(null);
     releaseWakeLock();
     if (fileStreamRef.current) {
-      fileStreamRef.current.close().catch(() => {});
+      fileStreamRef.current.abort().catch(() => {});
       fileStreamRef.current = null;
     }
     let hadOrphanedOpfsFile = false;
     if (opfsWritableRef.current) {
-      opfsWritableRef.current.close().catch(() => {});
+      opfsWritableRef.current.abort().catch(() => {});
       opfsWritableRef.current = null;
       opfsFileHandleRef.current = null;
       hadOrphanedOpfsFile = true;
@@ -785,12 +785,12 @@ export function usePeerLink({ role, code: initialCode }: UsePeerLinkProps) {
             receiveBufferRef.current = [];
             receivedSizeRef.current = 0;
             if (fileStreamRef.current) {
-              try { await fileStreamRef.current.close(); } catch { /* ignore */ }
+              try { await fileStreamRef.current.abort(); } catch { /* ignore */ }
               fileStreamRef.current = null;
             }
             let hadOpfsFile = false;
             if (opfsWritableRef.current) {
-              try { await opfsWritableRef.current.close(); } catch { /* ignore */ }
+              try { await opfsWritableRef.current.abort(); } catch { /* ignore */ }
               opfsWritableRef.current = null;
               opfsFileHandleRef.current = null;
               hadOpfsFile = true;
@@ -1015,12 +1015,12 @@ export function usePeerLink({ role, code: initialCode }: UsePeerLinkProps) {
           receiveBufferRef.current = [];
           receivedSizeRef.current = 0;
           if (fileStreamRef.current) {
-            try { await fileStreamRef.current.close(); } catch { /* ignore */ }
+            try { await fileStreamRef.current.abort(); } catch { /* ignore */ }
             fileStreamRef.current = null;
           }
           let hadOpfsKick = false;
           if (opfsWritableRef.current) {
-            try { await opfsWritableRef.current.close(); } catch { /* ignore */ }
+            try { await opfsWritableRef.current.abort(); } catch { /* ignore */ }
             opfsWritableRef.current = null;
             opfsFileHandleRef.current = null;
             hadOpfsKick = true;
@@ -1155,12 +1155,12 @@ export function usePeerLink({ role, code: initialCode }: UsePeerLinkProps) {
       receiveBufferRef.current = [];
       receivedSizeRef.current = 0;
       if (fileStreamRef.current) {
-        fileStreamRef.current.close().catch(() => {});
+        fileStreamRef.current.abort().catch(() => {});
         fileStreamRef.current = null;
       }
       let hadOpfsFile = false;
       if (opfsWritableRef.current) {
-        opfsWritableRef.current.close().catch(() => {});
+        opfsWritableRef.current.abort().catch(() => {});
         opfsWritableRef.current = null;
         opfsFileHandleRef.current = null;
         hadOpfsFile = true;
