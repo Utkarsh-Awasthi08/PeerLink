@@ -69,6 +69,7 @@ export interface FileManifestItem {
 interface FileSystemWritableStreamLike {
   write(data: ArrayBuffer | Uint8Array): Promise<void>;
   close(): Promise<void>;
+  abort(reason?: any): Promise<void>;
 }
 
 interface FileSystemHandleLike {
