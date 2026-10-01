@@ -109,7 +109,13 @@ export function PeerLinkProvider({ children }: { children: ReactNode }) {
   const handleFilesSelected = useCallback((files: File[]) => {
     setSelectedFiles(prev => {
       const existing = new Set(prev.map(f => `${f.name}-${f.size}`));
-      return [...prev, ...files.filter(f => !existing.has(`${f.name}-${f.size}`))];
+      const uniqueFiles = files.filter(f => !existing.has(`${f.name}-${f.size}`));
+      
+      if (uniqueFiles.length > 0) {
+        toast.success(`${uniqueFiles.length} file(s) ready to upload!`);
+      }
+      
+      return [...prev, ...uniqueFiles];
     });
   }, []);
 
@@ -132,7 +138,13 @@ export function PeerLinkProvider({ children }: { children: ReactNode }) {
     if (files.length === 0) return;
     setSelectedFiles(prev => {
       const existing = new Set(prev.map(f => `${f.name}-${f.size}`));
-      return [...prev, ...files.filter(f => !existing.has(`${f.name}-${f.size}`))];
+      const uniqueFiles = files.filter(f => !existing.has(`${f.name}-${f.size}`));
+      
+      if (uniqueFiles.length > 0) {
+        toast.success(`${uniqueFiles.length} additional file(s) added!`);
+      }
+      
+      return [...prev, ...uniqueFiles];
     });
     senderRef.current.addFiles(files);
   }, []);
