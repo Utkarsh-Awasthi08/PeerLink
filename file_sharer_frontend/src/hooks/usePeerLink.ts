@@ -82,6 +82,10 @@ interface WindowWithFilePicker extends Window {
     suggestedName?: string;
     startIn?: 'desktop' | 'documents' | 'downloads' | 'music' | 'pictures' | 'videos';
   }) => Promise<FileSystemHandleLike>;
+  showDirectoryPicker?: (options?: {
+    mode?: 'read' | 'readwrite';
+    startIn?: 'desktop' | 'documents' | 'downloads' | 'music' | 'pictures' | 'videos';
+  }) => Promise<FileSystemDirectoryHandle>;
 }
 
 // ─── Hook ────────────────────────────────────────────────────────────────────
@@ -153,6 +157,12 @@ export function usePeerLink({ role, code: initialCode }: UsePeerLinkProps) {
   // Receive buffers (reset per file)
   const receiveBufferRef = useRef<ArrayBuffer[]>([]);
   const fileStreamRef = useRef<FileSystemWritableStreamLike | null>(null); // For File System Access API
+
+  // Directory handle — set once via "Save to Folder", used for all subsequent downloads
+  // so no per-file save dialog appears. Lives for the lifetime of the session; cleared
+  // if the user revokes permission or clicks "× Clear Folder".
+  const directoryHandleRef = useRef<FileSystemDirectoryHandle | null>(null);
+  const [downloadDirectoryName, setDownloadDirectoryName] = useState<string | null>(null);
   
   // OPFS
   const opfsFileHandleRef = useRef<FileSystemHandleLike | null>(null);
@@ -164,6 +174,31 @@ export function usePeerLink({ role, code: initialCode }: UsePeerLinkProps) {
   const incomingFilenameRef = useRef<string>('download');
   const incomingFileIndexRef = useRef<number>(-1);
   const wakeLockRef = useRef<any>(null);
+
+  // ── Directory Picker ────────────────────────────────────────────────────────
+
+  /** Opens a folder selection dialog once. All downloads in this session then
+   *  write directly into that folder without any further prompts. Returns true
+   *  if the user selected a folder, false if they cancelled. */
+  const setDownloadDirectory = useCallback(async (): Promise<boolean> => {
+    const win = window as WindowWithFilePicker;
+    if (!win.showDirectoryPicker) return false;
+    try {
+      const handle = await win.showDirectoryPicker({ mode: 'readwrite', startIn: 'downloads' });
+      directoryHandleRef.current = handle;
+      setDownloadDirectoryName(handle.name);
+      return true;
+    } catch {
+      // User cancelled — leave any existing handle intact
+      return false;
+    }
+  }, []);
+
+  /** Clears the saved directory handle, reverting to per-file save dialogs. */
+  const clearDownloadDirectory = useCallback(() => {
+    directoryHandleRef.current = null;
+    setDownloadDirectoryName(null);
+  }, []);
 
   const requestWakeLock = useCallback(async () => {
     try {
@@ -1232,22 +1267,50 @@ export function usePeerLink({ role, code: initialCode }: UsePeerLinkProps) {
       requestWakeLock();
 
       if (saveFilePicker) {
-        try {
-          const handle = await saveFilePicker({
-            suggestedName: fileInfo.name,
-            // Can't skip this dialog entirely — the browser requires it as a
-            // security boundary — but defaulting it straight into Downloads
-            // with the filename already filled in makes it a single click
-            // instead of having to navigate there manually each time.
-            startIn: 'downloads',
-          });
-          const writable = await handle.createWritable();
-          fileStreamRef.current = writable;
-        } catch (err) {
-          console.warn('Save prompt cancelled or failed.', err);
-          downloadingIndexRef.current = null;
-          setDownloadingIndex(null);
-          return;
+        // Fast path: if the user already chose a download folder, write directly
+        // into it — no dialog at all. Falls back to showSaveFilePicker if the
+        // handle was cleared or browser revoked permission mid-session.
+        if (directoryHandleRef.current) {
+          try {
+            const fileHandle = await directoryHandleRef.current.getFileHandle(
+              fileInfo.name, { create: true }
+            );
+            const writable = await (fileHandle as unknown as FileSystemHandleLike).createWritable();
+            fileStreamRef.current = writable;
+          } catch (err) {
+            // Permission may have been revoked — clear the stale handle and
+            // fall back to the per-file picker for this download.
+            console.warn('Directory write failed, clearing handle and falling back to save dialog.', err);
+            directoryHandleRef.current = null;
+            setDownloadDirectoryName(null);
+            try {
+              const handle = await saveFilePicker({ suggestedName: fileInfo.name, startIn: 'downloads' });
+              const writable = await handle.createWritable();
+              fileStreamRef.current = writable;
+            } catch (err2) {
+              console.warn('Save prompt cancelled or failed.', err2);
+              downloadingIndexRef.current = null;
+              setDownloadingIndex(null);
+              return;
+            }
+          }
+        } else {
+          // No directory selected — show the per-file save dialog as before.
+          try {
+            const handle = await saveFilePicker({
+              suggestedName: fileInfo.name,
+              // Defaults straight into Downloads with the filename filled in,
+              // making it a single click rather than navigating there manually.
+              startIn: 'downloads',
+            });
+            const writable = await handle.createWritable();
+            fileStreamRef.current = writable;
+          } catch (err) {
+            console.warn('Save prompt cancelled or failed.', err);
+            downloadingIndexRef.current = null;
+            setDownloadingIndex(null);
+            return;
+          }
         }
       } else if (typeof navigator !== 'undefined' && navigator.storage && navigator.storage.getDirectory) {
         try {
@@ -1452,5 +1515,8 @@ export function usePeerLink({ role, code: initialCode }: UsePeerLinkProps) {
     resume,
     disconnect,
     disconnectPeer,
+    downloadDirectoryName,
+    setDownloadDirectory,
+    clearDownloadDirectory,
   };
 }

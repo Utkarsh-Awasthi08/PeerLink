@@ -4,7 +4,7 @@ import { useEffect, useState, useRef } from 'react';
 import { usePeerLink } from '@/hooks/usePeerLink';
 import TransferStats from '@/components/TransferStats';
 import toast from 'react-hot-toast';
-import { FiShield, FiLock, FiDownload, FiFile, FiClock, FiX } from 'react-icons/fi';
+import { FiShield, FiLock, FiDownload, FiFile, FiClock, FiX, FiFolder } from 'react-icons/fi';
 
 function formatBytes(bytes: number): string {
   if (bytes === 0) return '0 B';
@@ -66,6 +66,9 @@ export default function DownloadPage() {
     cancelTransfer,
     connect,
     disconnect,
+    downloadDirectoryName,
+    setDownloadDirectory,
+    clearDownloadDirectory,
   } = usePeerLink({ role: 'receiver' });
 
   // Tracks whether we've already tried one automatic reconnect for the
@@ -179,6 +182,17 @@ export default function DownloadPage() {
     }
   };
 
+  // Detect if the browser supports showDirectoryPicker (Chromium desktop only)
+  const supportsDirectoryPicker =
+    typeof window !== 'undefined' && 'showDirectoryPicker' in window;
+
+  const handleSetFolder = async () => {
+    const ok = await setDownloadDirectory();
+    if (ok) {
+      toast.success('Download folder set! All files will save there automatically. 📁');
+    }
+  };
+
 
   return (
     <div className="min-h-screen flex items-center justify-center bg-gradient-to-br from-blue-50 via-indigo-50 to-purple-50 p-4 sm:p-6 md:p-8">
@@ -225,15 +239,45 @@ export default function DownloadPage() {
               <h3 className="text-sm font-bold text-gray-700 uppercase tracking-wider">
                 Available Files ({manifest.length})
               </h3>
-              {manifest.length > 1 && (
-                <button
-                  onClick={handleDownloadAll}
-                  disabled={downloadQueue.length > 0}
-                  className="text-xs font-bold text-blue-600 hover:text-blue-800 bg-blue-50 px-3 py-1.5 rounded-lg transition-colors disabled:opacity-50"
-                >
-                  {allDownloaded ? 'Download All Again' : 'Download All'}
-                </button>
-              )}
+              <div className="flex items-center gap-2">
+                {/* Save to Folder button — only shown on Chromium desktop */}
+                {supportsDirectoryPicker && (
+                  downloadDirectoryName ? (
+                    // Active folder badge: shows folder name + clear button
+                    <div className="flex items-center gap-1 text-xs font-semibold text-emerald-700 bg-emerald-50 border border-emerald-200 px-2.5 py-1.5 rounded-lg">
+                      <FiFolder className="w-3 h-3 flex-shrink-0" />
+                      <span className="truncate max-w-[90px]" title={downloadDirectoryName}>{downloadDirectoryName}</span>
+                      <button
+                        onClick={clearDownloadDirectory}
+                        title="Clear download folder — revert to per-file dialogs"
+                        className="ml-0.5 text-emerald-500 hover:text-red-500 transition-colors"
+                        aria-label="Clear download folder"
+                      >
+                        <FiX className="w-3 h-3" />
+                      </button>
+                    </div>
+                  ) : (
+                    // Prompt to choose a folder
+                    <button
+                      onClick={handleSetFolder}
+                      title="Pick a folder once — all files save there with no dialog"
+                      className="flex items-center gap-1 text-xs font-bold text-purple-600 hover:text-purple-800 bg-purple-50 hover:bg-purple-100 border border-purple-200 px-2.5 py-1.5 rounded-lg transition-colors"
+                    >
+                      <FiFolder className="w-3 h-3" />
+                      Save to Folder
+                    </button>
+                  )
+                )}
+                {manifest.length > 1 && (
+                  <button
+                    onClick={handleDownloadAll}
+                    disabled={downloadQueue.length > 0}
+                    className="text-xs font-bold text-blue-600 hover:text-blue-800 bg-blue-50 px-3 py-1.5 rounded-lg transition-colors disabled:opacity-50"
+                  >
+                    {allDownloaded ? 'Download All Again' : 'Download All'}
+                  </button>
+                )}
+              </div>
             </div>
 
             <ul className="space-y-2 max-h-64 overflow-y-auto pr-1">
